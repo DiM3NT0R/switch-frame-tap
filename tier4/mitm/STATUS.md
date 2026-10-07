@@ -128,6 +128,36 @@ process's framebuffer.
   Granting `svcDebugActiveProcess` in `syscalls` is necessary and not sufficient;
   `kern_svc_debug.cpp:38` also wants `force_debug`. M33 shipped without it.
 
+## *** v0.7.10 (work in progress): the web applet crash (SooraMaru) ***
+
+- **Report:** games that open the web applet (Smash's manual/news) crash
+  with the module installed, even with streaming off. Photo: **2210-1024**
+  (module 210 = Web), program **0100000000000100F** (offline web applet) - the
+  applet aborts itself.
+- **v0.7.10-test (built, run once):** the capture region (~36 MB: frame copy,
+  arena, stream stages) is taken only when a stream starts (CaptureAcquire,
+  before the attach) and given back in every live wait state (CaptureRelease:
+  off / no viewer / excluded / no game) and after a standalone screenshot.
+  The boot heap is VicBaseHeap (4 MB: cfg, cmd, guard pages, dst, own src).
+  NvfSession now frees its two nvmap handles (NvmapFree, libnx's
+  nvioctlNvmap_Free) - never done before, two leaked per session; the region
+  is only released when g_capture_handles is 0 and no engine is wedged.
+  Result: still 2210-1024.
+- **Applet group limits logged every 250 ms** (pm:dmnt
+  AtmosphereGetCurrentLimitInfo): idle 107/500 MB, 40/96 threads, 3/32 tmem,
+  4/6 sessions; the web applet took memory to 298 MB (still rising), threads
+  41, sessions 5 - and died 1.7 s later. Our module is ~10 MB of that group
+  (6.5 MB image/bss + 4 MB heap). Reading: the group's 500 MB cap is sized for
+  the web applet with no slack, so any resident Applet-group footprint breaks
+  it (masagrator: "by design").
+- **Experiment: application_type 0 (System group):** boot fatal **2001-0132 in
+  am (0x23)** - the System group has no room for the module either. Reverted;
+  the user's SD went back to the v0.7.9 release.
+- **Direction:** a tiny resident part and a streaming worker that exists only
+  while a viewer is connected (zero Applet-group footprint otherwise), or a
+  much smaller resident footprint. The capture-on-demand and nvmap-free work
+  above stays: it is needed either way.
+
 ## *** v0.7.9: the game's crop decides; display-mapped regions; cheats via dmnt:cht ***
 
 - **XCX (masagrator, v0.7.8):** back to 720p, then 1080p again 4 s later - its

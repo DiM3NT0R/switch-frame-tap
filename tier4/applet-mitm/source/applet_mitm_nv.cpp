@@ -124,6 +124,9 @@ namespace ams::mitm::applet {
          * process will actually grant rather than guessing, and size the capture
          * to whatever we get. 2 MB granularity is the AllocateMemoryBlock unit. */
         constexpr size_t VicBufsEnd  = 0x360000;  /* cfg+cmd+dst+src all live below this */
+        /* v0.7.10: the heap held for the whole boot - the engine buffers only */
+        constexpr size_t VicBaseHeap = 4 * 1024 * 1024;
+        static_assert(VicBufsEnd <= VicBaseHeap);
         /* M59 RELAYOUT - the blocker M56 predicted. Staging used to start
          * 983,040 B into the capture region, which collided with a resident
          * full frame (8,294,400 B). It now starts past a whole slot. */
@@ -151,6 +154,7 @@ namespace ams::mitm::applet {
         constinit size_t g_ind_size = 0;
 
         constinit uintptr_t g_vic_heap    = 0;
+        constinit bool g_engine_wedged = false;   /* v0.7.10: up here - CaptureRelease checks it */
         constinit u8       *g_vic_cfg_buf = nullptr;
         constinit u8       *g_vic_cmd_buf = nullptr;
         constinit u8       *g_vic_dst_buf = nullptr;
@@ -255,82 +259,96 @@ namespace ams::mitm::applet {
              * ~400 MB free at probe (M55), and a refusal just descends. */
             /* M94: 40 and 36 MB first - the 1080p pipeline adds a second 3 MB
              * picture to a 14 MB arena. */
-            for (const size_t sz : { 40_MB, 36_MB, 32_MB, 28_MB, 24_MB, 20_MB, 16_MB, 12_MB, 10_MB, 8_MB, 4_MB, 2_MB }) {
-                const auto rc = os::SetMemoryHeapSize(sz);
-                LogLine("   SetMemoryHeapSize(%zu MB) rc=0x%x", sz / (1024 * 1024), rc.GetValue());
-                if (R_SUCCEEDED(rc)) { want = sz; break; }
+            /* v0.7.10: only the engine buffers (cfg, cmd, guard pages, dst, our
+             * own source - VicBufsEnd, 3.4 MB) are held for the boot. The
+             * capture region (frame copy, encode arena, stream stages, ~36 MB)
+             * is taken by CaptureAcquire when a stream starts and given back
+             * by CaptureRelease when there is none: 40 MB held from the first
+             * game on left the Applet pool short, and the web applet (Smash's
+             * news, SooraMaru) crashed - even with streaming off. */
+            want = VicBaseHeap;
+            if (const auto rc = os::SetMemoryHeapSize(want); R_FAILED(rc)) {
+                LogLine("   SetMemoryHeapSize(%zu MB) rc=0x%x - no heap", want / (1024 * 1024), rc.GetValue());
+                return false;
             }
-            if (want == 0) { LogLine("   no heap size accepted"); return false; }
-
             uintptr_t addr = 0;
             if (const auto rc = os::AllocateMemoryBlock(std::addressof(addr), want); R_FAILED(rc)) {
                 LogLine("   AllocateMemoryBlock(%zu MB) FAILED rc=0x%x", want / (1024 * 1024), rc.GetValue());
                 return false;
             }
-            /* The line that settles it: System free must be ~unchanged and
-             * Applet free must drop by `want`. If System drops instead, the
-             * NPDM change did not take and we are back on M50's path - stop. */
             LogPools("after heap grab");
-            /* masagrator's point on GBAtemp, and he is right: a sysmodule cannot
-             * hold a 1080p frame. One is 7,913 KB against a 2 MB heap - 4x the
-             * whole allocation - which is why everything here works in 983,040 B
-             * block-rows. What we never did is ask the kernel what the budget
-             * actually IS, instead of inferring it from a failed request. That
-             * matters now, because NVENC needs its own input surface, bitstream
-             * buffer and (unless we go all-intra) reference frames on top. */
-            {
-                u64 tot = 0, used = 0, srtot = 0, srused = 0;
-                ::ams::svc::GetInfo(std::addressof(tot),    ::ams::svc::InfoType_TotalMemorySize,         ::ams::svc::PseudoHandle::CurrentProcess, 0);
-                ::ams::svc::GetInfo(std::addressof(used),   ::ams::svc::InfoType_UsedMemorySize,          ::ams::svc::PseudoHandle::CurrentProcess, 0);
-                ::ams::svc::GetInfo(std::addressof(srtot),  ::ams::svc::InfoType_SystemResourceSizeTotal, ::ams::svc::PseudoHandle::CurrentProcess, 0);
-                ::ams::svc::GetInfo(std::addressof(srused), ::ams::svc::InfoType_SystemResourceSizeUsed,  ::ams::svc::PseudoHandle::CurrentProcess, 0);
-                LogLine("   [probe, AFTER heap grab] total=%llu KB used=%llu KB free=%lld KB | sysresource %llu/%llu KB",
-                        static_cast<unsigned long long>(tot / 1024),
-                        static_cast<unsigned long long>(used / 1024),
-                        static_cast<long long>((static_cast<s64>(tot) - static_cast<s64>(used)) / 1024),
-                        static_cast<unsigned long long>(srused / 1024),
-                        static_cast<unsigned long long>(srtot / 1024));
-                LogLine("   one 1080p frame is 7913 KB; heap granted %zu KB; NVENC must fit in what is left",
-                        want / 1024);
-            }
             g_vic_heap_size = want;
-            g_ind_size      = want - VicBufsEnd;
             g_vic_heap    = addr;
             g_vic_cfg_buf = reinterpret_cast<u8 *>(addr + 0x0000);
             g_vic_cmd_buf = reinterpret_cast<u8 *>(addr + 0x4000);
             g_vic_dst_buf = reinterpret_cast<u8 *>(addr + 0x10000);
             g_vic_src_buf = reinterpret_cast<u8 *>(addr + 0x350000);
-            g_ind_buf     = reinterpret_cast<u8 *>(addr + VicBufsEnd);
-            g_stage_buf   = g_ind_buf + FbBlockRowStage;
+            g_ind_buf = nullptr;
+            g_ind_size = 0;
+            g_stage_buf = nullptr;
+            g_stream_stage[0] = g_stream_stage[1] = nullptr;
+            std::memset(reinterpret_cast<void *>(addr), 0, want);
+            LogLine("   VIC heap %zu MB at 0x%lx (engine buffers only; the capture region is taken per stream): cfg=%p cmd=%p dst=%p src=%p",
+                    want / (1024 * 1024), static_cast<unsigned long>(addr),
+                    static_cast<void *>(g_vic_cfg_buf), static_cast<void *>(g_vic_cmd_buf),
+                    static_cast<void *>(g_vic_dst_buf), static_cast<void *>(g_vic_src_buf));
+            return true;
+        }
+
+        /* nvmap handles on the capture region not yet freed (NvfSession
+         * creates two per session: the slot copy and the arena) - the region
+         * is never given back while any is alive */
+        constinit u32 g_capture_handles = 0;
+
+        /* v0.7.10: the capture region, right after the engine buffers. The
+         * ladder is the old one less the 4 MB base: 1080p pipelining wants the
+         * arena up to ~31.5 MB; a refusal just descends (720p needs ~22 MB). */
+        bool CaptureAcquire(const char *who) {
+            if (g_ind_buf != nullptr) { return true; }
+            if (g_vic_heap == 0) { return false; }
+            size_t total = 0;
+            for (const size_t sz : { 40_MB, 36_MB, 32_MB, 28_MB, 24_MB, 20_MB, 16_MB, 12_MB, 10_MB }) {
+                if (R_SUCCEEDED(os::SetMemoryHeapSize(sz))) { total = sz; break; }
+            }
+            if (total == 0) { LogLine("   %s: capture memory: no heap size accepted - the Applet pool is short (an applet open?)", who); return false; }
+            const size_t cap = total - VicBaseHeap;
+            uintptr_t addr = 0;
+            if (const auto rc = os::AllocateMemoryBlock(std::addressof(addr), cap); R_FAILED(rc)) {
+                LogLine("   %s: capture memory: AllocateMemoryBlock(%zu MB) rc=0x%x", who, cap / (1024 * 1024), rc.GetValue());
+                static_cast<void>(os::SetMemoryHeapSize(VicBaseHeap));
+                return false;
+            }
+            g_ind_buf  = reinterpret_cast<u8 *>(addr);
+            g_ind_size = cap;
+            g_stage_buf = g_ind_buf + FbBlockRowStage;
             g_stream_stage[0] = g_stage_buf + StreamStageSize;
             g_stream_stage[1] = g_stream_stage[0] + StreamStageSize;
-
-            std::memset(reinterpret_cast<void *>(addr), 0, want);
-            LogLine("   VIC heap %zu MB at 0x%lx (capture buffer %zu KB on heap): cfg=%p cmd=%p dst=%p src=%p",
-                    want / (1024 * 1024), static_cast<unsigned long>(addr), g_ind_size / 1024,
-                    static_cast<void *>(g_vic_cfg_buf),
-                    static_cast<void *>(g_vic_cmd_buf),
-                    static_cast<void *>(g_vic_dst_buf),
-                    static_cast<void *>(g_vic_src_buf));
-            /* M56: state the fit arithmetic instead of eyeballing it later.
-             * g_ind_size = want - VicBufsEnd(0x30000); one 1080p frame is
-             * 8,294,400 B. Note the second constraint: g_stage_buf sits at
-             * g_ind_buf + FbBlockRowStage (983,040 B), so even when the region
-             * is large enough, a full-frame capture would run through the
-             * staging area. That relayout is its own milestone - this line only
-             * reports whether it is now the blocker. */
-            {
-                constexpr size_t OneFrame = 1920u * 1080u * 4u;
-                LogLine("   capture region %zu KB vs one 1080p frame %zu KB -> %s",
-                        g_ind_size / 1024, OneFrame / 1024,
-                        g_ind_size >= OneFrame ? "FITS" : "TOO SMALL");
-                LogLine("   stage buf at +%zu KB; full-frame capture %s",
-                        FbBlockRowStage / 1024,
-                        (g_ind_size >= OneFrame && FbBlockRowStage < OneFrame)
-                            ? "would OVERLAP staging - relayout is the next blocker"
-                            : "clear of staging");
-            }
+            g_vic_heap_size = total;
+            std::memset(g_ind_buf, 0, cap);
+            LogLine("   %s: capture memory taken: %zu MB at %p (heap %zu MB)", who, cap / (1024 * 1024), static_cast<void *>(g_ind_buf), total / (1024 * 1024));
             return true;
+        }
+
+        /* the capture region back to the system - only with no nvmap handle
+         * on it and no engine job that may still write it */
+        void CaptureRelease(const char *who) {
+            if (g_ind_buf == nullptr) { return; }
+            static bool said_kept = false;
+            if (g_engine_wedged || g_capture_handles != 0) {
+                if (!said_kept) {
+                    LogLine("   %s: capture memory kept (%s)", who, g_engine_wedged ? "an engine job never completed" : "an nvmap handle on it is still alive");
+                    said_kept = true;
+                }
+                return;
+            }
+            os::FreeMemoryBlock(reinterpret_cast<uintptr_t>(g_ind_buf), g_ind_size);
+            const auto rc = os::SetMemoryHeapSize(VicBaseHeap);
+            LogLine("   %s: capture memory given back (%zu MB), heap back to %zu MB rc=0x%x", who, g_ind_size / (1024 * 1024), VicBaseHeap / (1024 * 1024), rc.GetValue());
+            g_ind_buf = nullptr;
+            g_ind_size = 0;
+            g_stage_buf = nullptr;
+            g_stream_stage[0] = g_stream_stage[1] = nullptr;
+            g_vic_heap_size = VicBaseHeap;
         }
 
         /* Phase B geometry: a scale-free 64x64 crop of the frame's top-left.
@@ -359,6 +377,7 @@ namespace ams::mitm::applet {
         constexpr u32 NvmapIocFromId = MakeIowr(0x01, 0x03, 8);
         constexpr u32 NvmapIocAlloc  = MakeIowr(0x01, 0x04, 32);
         constexpr u32 NvmapIocGetId  = MakeIowr(0x01, 0x0E, 8);
+        constexpr u32 NvmapIocFree   = MakeIowr(0x01, 0x05, 24);   /* v0.7.10: libnx nvioctlNvmap_Free */
         /* {u64 aruid; u32 handle; u8 pad[4]} - asks whether an nvmap object is
          * bound to a given AppletResourceUserId. A pure query, so it doubles as
          * a safe way to DISCOVER the game's aruid. */
@@ -576,6 +595,23 @@ namespace ams::mitm::applet {
             *out_id     = gi.id;
             LogLine("   nvmapOwn ok handle=%u id=%u kind=%u size=0x%x", cr.handle, gi.id, kind, size);
             return rc;
+        }
+
+        /* v0.7.10: free one of our nvmap handles. Until now none was ever freed
+         * (two per stream session); the capture region can only go back to
+         * the system once nothing references it. True when nvmap let go of the
+         * memory (flags bit 0, NOT_FREED_YET, clear). */
+        bool NvmapFree(u32 fd, u32 handle) {
+            struct { u32 handle; u32 pad; u64 refcount; u32 size; u32 flags; } a = { handle, 0, 0, 0, 0 };
+            static_assert(sizeof(a) == 24);
+            u32 nverr = 0;
+            const ::Result rc = NvIoctl(fd, NvmapIocFree, std::addressof(a), sizeof(a), std::addressof(nverr));
+            const bool ok = R_SUCCEEDED(rc) && nverr == 0 && (a.flags & 1) == 0;
+            if (!ok) {
+                LogLine("   nvmap FREE(handle %u) rc=0x%x nverr=%u refcount=%llu flags=%u - still referenced", handle, rc, nverr,
+                        static_cast<unsigned long long>(a.refcount), a.flags);
+            }
+            return ok;
         }
 
         /* Three jobs, run back-to-back in one probe so a single reboot answers
@@ -946,7 +982,6 @@ namespace ams::mitm::applet {
 
         /* M76: set when an engine job never completed and its channel was left
          * open. Every later engine probe in this boot refuses to run. */
-        constinit bool g_engine_wedged = false;
 
 
 
@@ -1412,6 +1447,9 @@ namespace ams::mitm::applet {
 
         VicStage("vb:0_heap");
         if (!AllocVicHeap()) { VicStage("vb:0_FAILED"); return; }
+        /* the test paths (no live mode, or the colour sweep) use the capture
+         * region from here on, for the whole boot, as before v0.7.10 */
+        if ((!g_live_armed || g_csc_armed) && !CaptureAcquire("tests")) { VicStage("vb:0_FAILED"); return; }
 
         VicStage("vb:1_smGetService");
         /* Service name decides the NvDrvPermission mask, and phys=0 on the
@@ -2548,6 +2586,7 @@ namespace ams::mitm::applet {
                 if (!g_stream_enabled.load(std::memory_order_relaxed)) {
                     g_live_state.store(LiveState_Off, std::memory_order_relaxed);
                     if (!said_off) { LogLine("   live: turned off (overlay)"); VicStage("live:off"); said_off = true; }
+                    CaptureRelease("live");
                     os::SleepThread(TimeSpan::FromMilliSeconds(250));
                     continue;
                 }
@@ -2555,6 +2594,7 @@ namespace ams::mitm::applet {
                 if (!UsbViewerPresent(300)) {
                     g_live_state.store(LiveState_WaitViewer, std::memory_order_relaxed);
                     if (!said_wait_viewer) { LogLine("   live: waiting for a viewer (raw-view) to read the stream"); VicStage("live:no_viewer"); said_wait_viewer = true; }
+                    CaptureRelease("live");
                     os::SleepThread(TimeSpan::FromMilliSeconds(700));
                     continue;
                 }
@@ -2573,6 +2613,7 @@ namespace ams::mitm::applet {
                 if (have_app && g_app_excluded.load(std::memory_order_relaxed)) {
                     g_live_state.store(LiveState_Excluded, std::memory_order_relaxed);
                     if (!said_wait_game) { LogLine("   live: %016llx is excluded - not attaching", static_cast<unsigned long long>(g_app_tid.load())); VicStage("live:excluded"); said_wait_game = true; }
+                    CaptureRelease("live");
                     os::SleepThread(TimeSpan::FromMilliSeconds(500));
                     continue;
                 }
@@ -2584,10 +2625,23 @@ namespace ams::mitm::applet {
                         VicStage("live:no_game");
                         said_wait_game = true;
                     }
+                    CaptureRelease("live");
                     os::SleepThread(TimeSpan::FromMilliSeconds(800));
                     continue;
                 }
                 said_wait_game = false;
+
+                /* v0.7.10: the capture region only now - a viewer reads and a
+                 * game presents. Short of memory (an applet such as the web
+                 * browser holds the Applet pool): wait and try again rather
+                 * than take what the applet needs. */
+                if (!CaptureAcquire("live")) {
+                    static u32 short_n = 0;
+                    if ((short_n++ % 15) == 0) { LogLine("   live: not enough memory free to stream right now - trying again"); }
+                    VicStage("live:no_memory");
+                    os::SleepThread(TimeSpan::FromSeconds(2));
+                    continue;
+                }
 
                 ++sessions;
                 g_live_sessions.store(sessions, std::memory_order_relaxed);
@@ -5028,6 +5082,7 @@ namespace ams::mitm::applet {
             const NvfLayout *lay = nullptr;    /* M90: nullptr = 720p */
             const NvfLayout &Lay() const { return lay != nullptr ? *lay : Layout720(); }
             bool vic_only = false;             /* v0.7.7: webcam-any - no NVENC channel */
+            u32 nvfd = 0;                      /* v0.7.10: the nvmap fd our handles live on, to free them */
             /* M87: the game's swapchain geometry. The defaults are MK8's, which
              * every run before M87 hard-coded: three 1920x1080 A8B8G8R8 slots
              * in one nvmap object, 128-row blocks. */
@@ -5242,6 +5297,14 @@ namespace ams::mitm::applet {
                 }
                 if (arena_vic != 0) { UnmapCmdBuffer(vfd, x.ah); }
                 if (slot_vic != 0) { UnmapCmdBuffer(vfd, sh); }
+                /* v0.7.10: unmapped everywhere - free the handles, so the
+                 * capture region can go back to the system. Not when a job
+                 * may still be in the channel (keep_open): the arena stays
+                 * referenced and CaptureRelease keeps the memory. */
+                if (!keep_open && nvfd != 0) {
+                    if (x.ah != 0 && NvmapFree(nvfd, x.ah)) { --g_capture_handles; }
+                    if (sh != 0 && NvmapFree(nvfd, sh)) { --g_capture_handles; }
+                }
             }
 
             bool Open(u32 v, u32 nvmap_fd, u32 cmd, u32 vsp, u32 cfg, const char *who) {
@@ -5259,6 +5322,8 @@ namespace ams::mitm::applet {
                 if (R_FAILED(NvmapOwn(nvmap_fd, g_ind_buf, slot_map, 0, std::addressof(sh), std::addressof(si), true))) {
                     LogLine("   %s: nvmap of the slot copy failed", who); return false;
                 }
+                nvfd = nvmap_fd;
+                ++g_capture_handles;
                 MapCmdBuffer(vfd, sh, std::addressof(slot_vic), "nvf-slot", 0);
                 if (slot_vic == 0) { LogLine("   %s: slot pin returned 0 - refusing", who); return false; }
 
@@ -5273,6 +5338,7 @@ namespace ams::mitm::applet {
                 if (R_FAILED(NvmapOwn(nvmap_fd, x.a, arena_size, 0, std::addressof(x.ah), std::addressof(aid), true))) {
                     LogLine("   %s: nvmap of the %u KB arena failed", who, arena_size / 1024); return false;
                 }
+                ++g_capture_handles;
                 MapCmdBuffer(vfd, x.ah, std::addressof(arena_vic), "nvf-arena(vic)", 0);
                 if (arena_vic == 0) { LogLine("   %s: arena pin (VIC) returned 0 - refusing", who); return false; }
                 if (vic_only) {
@@ -5944,6 +6010,10 @@ namespace ams::mitm::applet {
                 if (gen == g_game_surface.generation) { break; }
             }
             if (geo.num_slots == 0 || geo.buf_size == 0) { ++g_shot_fail; LogLine("shot: this game's swapchain has not been seen"); return false; }
+            /* v0.7.10: the frame needs the capture region - just for the shot */
+            const bool took = g_ind_buf == nullptr;
+            if (!CaptureAcquire("shot")) { ++g_shot_fail; NotifyShot("Screenshot failed: not enough memory free"); return false; }
+            ON_SCOPE_EXIT { if (took) { CaptureRelease("shot"); } };
             ::ams::svc::Handle dbg = ::ams::svc::InvalidHandle;
             if (!DmAttach(pid.value, std::addressof(dbg))) { ++g_shot_fail; LogLine("shot: could not attach to the game"); return false; }
             u64 slot_base = 0;

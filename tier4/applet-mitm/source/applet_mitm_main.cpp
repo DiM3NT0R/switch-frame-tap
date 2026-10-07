@@ -189,9 +189,40 @@ namespace ams {
         alignas(os::ThreadStackAlignment) constinit u8 g_hb_stack[16_KB];
         constinit os::ThreadType g_hb_thread;
 
+        /* v0.7.10 diagnostic: the Applet resource-limit group (ours, shared with
+         * every library applet) - current/limit of memory, threads, events,
+         * transfer memories and sessions, every 250 ms, logged when one moves.
+         * SooraMaru: the web applet crashes with the module installed even
+         * with 4 MB held; the line before the crash names the limit. */
+        void LogAppletLimits() {
+            if (mitm::applet::g_pmdmnt_rc != 0) { return; }
+            static s64 last[5] = { -1, -1, -1, -1, -1 };
+            static const svc::LimitableResource res[5] = {
+                svc::LimitableResource_PhysicalMemoryMax, svc::LimitableResource_ThreadCountMax, svc::LimitableResource_EventCountMax,
+                svc::LimitableResource_TransferMemoryCountMax, svc::LimitableResource_SessionCountMax,
+            };
+            u64 cur[5] = {}, lim[5] = {};
+            bool moved = false;
+            for (u32 k = 0; k < 5; ++k) {
+                if (R_FAILED(pm::dmnt::AtmosphereGetCurrentLimitInfo(std::addressof(cur[k]), std::addressof(lim[k]), pm::ResourceLimitGroup_Applet, res[k]))) { return; }
+                const s64 v = k == 0 ? static_cast<s64>(cur[k] >> 20) : static_cast<s64>(cur[k]);   /* memory in MB */
+                if (v != last[k]) { moved = true; last[k] = v; }
+            }
+            if (!moved) { return; }
+            mitm::applet::LogLine("applet group: memory %llu/%llu MB, threads %llu/%llu, events %llu/%llu, transfer memories %llu/%llu, sessions %llu/%llu",
+                                  static_cast<unsigned long long>(cur[0] >> 20), static_cast<unsigned long long>(lim[0] >> 20),
+                                  static_cast<unsigned long long>(cur[1]), static_cast<unsigned long long>(lim[1]),
+                                  static_cast<unsigned long long>(cur[2]), static_cast<unsigned long long>(lim[2]),
+                                  static_cast<unsigned long long>(cur[3]), static_cast<unsigned long long>(lim[3]),
+                                  static_cast<unsigned long long>(cur[4]), static_cast<unsigned long long>(lim[4]));
+        }
+
         void HeartbeatThread(void *) {
             for (u32 i = 1; ; i++) {
-                os::SleepThread(TimeSpan::FromSeconds(3));
+                for (u32 t = 0; t < 12; ++t) {
+                    os::SleepThread(TimeSpan::FromMilliSeconds(250));
+                    LogAppletLimits();
+                }
                 char b[96];
                 const auto &st = mitm::applet::g_stats;
                 std::snprintf(b, sizeof(b), "hb:%u sess=%u getdisp=%u relay=%u txn=%u vic=%s",
@@ -739,7 +770,7 @@ namespace ams {
         /* M76: this line used to print jpg=off before jpg was parsed, and
          * called every build a "read-only observer". The flag dump below is
          * the record of what this boot armed. */
-        mitm::applet::LogLine("applet-mitm v0.7.9: up (grc IPC interceptor %s)",
+        mitm::applet::LogLine("applet-mitm v0.7.10-test: up (grc IPC interceptor %s)",
                               mitm::applet::g_grc_armed ? "ARMED" : "off");
         {
             const auto api = exosphere::GetApiInfo();
