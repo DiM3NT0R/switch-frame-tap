@@ -16,7 +16,7 @@ STAGE="$OUT/stage-switch"
 [ -f "$REPO/ref/libtesla/include/tesla.hpp" ] || { echo "ref/libtesla is missing (git clone https://github.com/WerWolv/libtesla ref/libtesla)"; exit 1; }
 
 echo "== sysmodule"
-MAKEFLAGS=-j8 bash "$REPO/tier4/applet-mitm/build.sh" >/dev/null
+MAKEFLAGS="${MAKEFLAGS:--j6}" bash "$REPO/tier4/applet-mitm/build.sh" >/dev/null
 echo "== memory donor"
 docker run --rm -u "$(id -u):$(id -g)" -v "$REPO":/w -w /w/tier4/donor "$IMG" bash -lc 'make' >/dev/null
 echo "== overlay and manager"
