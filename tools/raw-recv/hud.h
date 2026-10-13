@@ -14,6 +14,9 @@ enum { HUD_OFF = 0, HUD_FPS, HUD_GRAPHS, HUD_FULL, HUD_MODES };
 static const char *const hud_mode_name[HUD_MODES] = { "off", "FPS", "graphs", "full" };
 static int g_hud = HUD_OFF;
 static Uint64 g_hud_toast = 0;          /* when the "Stats overlay: ..." note was set */
+static char g_hud_toast_text[96] = "";  /* v0.7.11: another note instead (vsync, decoder) */
+static int g_vsync = 1;                  /* v0.7.11: V - wait for the display's refresh */
+static const char *g_dec_mode = "";      /* v0.7.11: "1 thread" / "2 threads (slow PC)" */
 
 /* per-frame history: the last HUD_N frames shown, oldest first when read */
 #define HUD_N 240
@@ -78,6 +81,13 @@ static void hud_second(const hud_sec *s)
 static void hud_cycle(void)
 {
     g_hud = (g_hud + 1) % HUD_MODES;
+    g_hud_toast_text[0] = 0;
+    g_hud_toast = SDL_GetPerformanceCounter();
+}
+
+static void hud_toast(const char *text)
+{
+    snprintf(g_hud_toast_text, sizeof(g_hud_toast_text), "%s", text);
     g_hud_toast = SDL_GetPerformanceCounter();
 }
 
@@ -199,8 +209,9 @@ static void hud_draw(SDL_Renderer *ren, int W, int H, const char *conn, const ch
     const double since_toast = (double)(now - g_hud_toast) / (double)SDL_GetPerformanceFrequency();
     if (g_hud_toast && since_toast >= 1.5) g_hud_toast = 0;
     if (g_hud_toast) {
-        char t[64];
-        snprintf(t, sizeof(t), "Stats overlay: %s  (O / F3)", hud_mode_name[g_hud]);
+        char t[112];
+        if (g_hud_toast_text[0]) snprintf(t, sizeof(t), "%s", g_hud_toast_text);
+        else snprintf(t, sizeof(t), "Stats overlay: %s  (O / F3)", hud_mode_name[g_hud]);
         const int tw = text_width(t, 20, 1) + 30;
         fill(ren, (w720 - tw) / 2, 640, tw, 36, hud_panel);
         hud_text(ren, t, w720 / 2, 646, 20, 1, hud_ink, 1);
@@ -238,7 +249,8 @@ static void hud_draw(SDL_Renderer *ren, int W, int H, const char *conn, const ch
         HUD_ROW("  on the Switch", "%.1f ms", g_hs.con);
         HUD_ROW("  on this PC", "%.1f ms", g_hs.pc);
         HUD_ROW("Decode", "%.2f ms (max %.1f)", g_hs.dec_ms, g_hs.dec_max);
-        HUD_ROW("Draw + vsync", "%.1f ms", g_hs.draw_ms);
+        HUD_ROW("  decoder", "%s", g_dec_mode);
+        HUD_ROW(g_vsync ? "Draw + vsync" : "Draw (vsync off)", "%.1f ms", g_hs.draw_ms);
         HUD_ROW("Worst frame gap", "%.1f ms", g_hs.gap_max);
         HUD_ROW("Frames skipped", "%ld (this second)", g_hs.skipped);
         HUD_ROW("Packets lost", "%ld", g_hs.lost);

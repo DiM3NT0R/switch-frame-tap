@@ -38,11 +38,14 @@
  *                              # back, and only closes when you close it. F11 or a
  *                              # double-click toggles fullscreen.
  *
- * Decoding: an IDR-only 720p60 stream at QP 20 is ~150-170 Mbps of CABAC,
- * which one core may not keep up with (a 4-vCPU cloud box: 32 ms/frame on one
- * thread, 10 ms/frame with frame threads). So the default uses FFmpeg's frame
- * threads - throughput, at the cost of a few frames of decoder latency.
- * --low-latency trades that back on a fast CPU, or with a higher nvqp.
+ * Decoding: v0.7.11 decodes on one thread by default (no decoder delay):
+ * since v0.6 the stream is P frames at ~2-15 Mbps, a few ms per frame on one
+ * core. Frame threads (--threads N) hold back N-1 frames (~16 ms each at
+ * 60 fps); they paid off for the early IDR-only stream (150+ Mbps). If one
+ * thread cannot keep up (over 12 ms a frame on average), the viewer switches
+ * itself to two frame threads once, and says so (overlay, log).
+ * V: vsync on/off (remembered) - off shows each frame the moment it is
+ * decoded, lower latency, may tear.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -271,6 +274,7 @@ static void prefs_load(void)
         if (sscanf(line, "last_ip=%63s", v) == 1) snprintf(g_last_ip, sizeof(g_last_ip), "%.63s", v);
         int hm;
         if (sscanf(line, "stats_overlay=%d", &hm) == 1 && hm >= 0 && hm < HUD_MODES) g_hud = hm;
+        if (sscanf(line, "vsync=%d", &hm) == 1) g_vsync = hm != 0;
     }
     fclose(f);
 }
@@ -281,7 +285,7 @@ static void prefs_save(void)
     prefs_path(path, sizeof(path));
     FILE *f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "connection=%s\nlast_ip=%s\nstats_overlay=%d\n", g_conn == CONN_NET ? "network" : "usb", g_last_ip, g_hud);
+    fprintf(f, "connection=%s\nlast_ip=%s\nstats_overlay=%d\nvsync=%d\n", g_conn == CONN_NET ? "network" : "usb", g_last_ip, g_hud, g_vsync);
     fclose(f);
 }
 
@@ -775,6 +779,15 @@ static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
             hud_cycle();
             prefs_save();
             fprintf(stderr, "\nstats overlay: %s\n", hud_mode_name[g_hud]);
+        } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_v && !e.key.repeat) {
+            /* v0.7.11: vsync off = each frame on screen the moment it is
+             * decoded (no wait for the refresh), lower latency, may tear */
+            g_vsync = !g_vsync;
+            SDL_RenderSetVSync(ren, g_vsync);
+            prefs_save();
+            hud_toast(g_vsync ? "Vsync on  (V)" : "Vsync off: lower latency, may tear  (V)");
+            fprintf(stderr, "\nvsync %s\n", g_vsync ? "on" : "off");
+            if (g_menu) menu_draw(ren);
         } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_m) {
             g_mute = !g_mute;
             if (g_adev) { SDL_ClearQueuedAudio(g_adev); SDL_PauseAudioDevice(g_adev, 1); g_a_paused = 1; }
@@ -905,6 +918,7 @@ static unsigned char g_key_pts[256];          /* and whether it was a keyframe *
 /* counters the decoder writes and the display loop reads (benign races) */
 static volatile long s_packets = 0, s_decoded = 0, s_undecoded = 0, s_lost = 0, s_keyframes = 0, s_sessions = 1;
 static volatile double s_bytes = 0, s_dec_ms = 0, s_dec_max = 0;
+static int g_dec_low = 1, g_dec_fallback = 0;   /* v0.7.11: one decode thread, and whether it fell back */
 
 typedef struct { h264_t *dec; FILE *rec; FILE *es; } dec_args_t;
 
@@ -937,6 +951,23 @@ static int decoder_main(void *arg)
         g_key_pts[hdr.kind & 255] = (hdr.flags & SFT_FLAG_KEY) != 0;
         s_dec_ms += dm;
         if (dm > s_dec_max) s_dec_max = dm;
+        /* v0.7.11: one decode thread by default; if this PC cannot keep up
+         * (over 12 ms a frame for 120 frames), two frame threads, once */
+        {
+            static long fb_n = 0; static double fb_ms = 0;
+            if (g_dec_low && !g_dec_fallback) {
+                fb_ms += dm;
+                if (++fb_n >= 120) {
+                    if (fb_ms / fb_n > 12.0) {
+                        fprintf(stderr, "\ndecode: %.1f ms a frame on one thread - switching to two frame threads (one frame more latency)\n", fb_ms / fb_n);
+                        h264_close(a->dec);
+                        if (h264_open(a->dec, 0, 2) == 0) { g_dec_fallback = 1; g_dec_mode = "2 threads (slow PC)"; hud_toast("Decoding on 2 threads: this PC is slow for 1"); }
+                        continue;
+                    }
+                    fb_n = 0; fb_ms = 0;
+                }
+            }
+        }
         if (got < 0) { s_undecoded++; continue; }
         if (got == 0) continue;
         s_decoded++;
@@ -960,6 +991,9 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
 {
     h264_t dec = {0};
     if (h264_open(&dec, low_latency, threads) != 0) { fprintf(stderr, "libavcodec H.264 decoder unavailable\n"); return 1; }
+    g_dec_low = low_latency;
+    g_dec_mode = low_latency ? "1 thread" : "frame threads (--threads)";
+    fprintf(stderr, "decode: %s\n", low_latency ? "one thread, no decoder delay" : "frame threads (--threads)");
     if (!win) {
         if (SDL_Init(SDL_INIT_VIDEO) != 0) { fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1; }
         SDL_SetYUVConversionMode(SDL_YUV_CONVERSION_BT709);
@@ -978,6 +1012,7 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
     } else {
         fprintf(stderr, "audio: %s\n", SDL_GetError());
     }
+    if (!g_vsync) SDL_RenderSetVSync(ren, 0);   /* v0.7.11: V, remembered */
     SDL_RendererInfo ri;
     if (SDL_GetRendererInfo(ren, &ri) == 0) {
         fprintf(stderr, "renderer: %s%s\n", ri.name, (ri.flags & SDL_RENDERER_PRESENTVSYNC) ? ", vsync" : ", NO vsync");
@@ -1188,7 +1223,7 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
 
 int main(int argc, char **argv)
 {
-    int swap_rb = 0, scale = 1, headless = 0, low_latency = 0, threads = 2;
+    int swap_rb = 0, scale = 1, headless = 0, low_latency = 1, threads = 2;   /* v0.7.11: one decode thread unless --threads */
     long max_frames = 0;
     const char *file = NULL, *record = NULL, *h264_out = NULL, *net_host = NULL;
     for (int i = 1; i < argc; i++) {
@@ -1200,7 +1235,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) max_frames = atol(argv[++i]);
         else if (!strcmp(argv[i], "--headless")) headless = 1;
         else if (!strcmp(argv[i], "--low-latency")) low_latency = 1;
-        else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--threads") && i + 1 < argc) { threads = atoi(argv[++i]); low_latency = 0; }
         else if (!strcmp(argv[i], "--app")) g_app = 1;
         else if (!strcmp(argv[i], "--paced")) g_paced = 1;
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) g_run_secs = atof(argv[++i]);
