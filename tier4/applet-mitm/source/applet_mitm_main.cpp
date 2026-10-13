@@ -804,7 +804,7 @@ namespace ams {
         /* M76: this line used to print jpg=off before jpg was parsed, and
          * called every build a "read-only observer". The flag dump below is
          * the record of what this boot armed. */
-        mitm::applet::LogLine("applet-mitm v0.7.11-test1: up (grc IPC interceptor %s), built against Atmosphere %d.%d.%d",
+        mitm::applet::LogLine("applet-mitm v0.7.11-test2: up (grc IPC interceptor %s), built against Atmosphere %d.%d.%d",
                               mitm::applet::g_grc_armed ? "ARMED" : "off",
                               ATMOSPHERE_RELEASE_VERSION_MAJOR, ATMOSPHERE_RELEASE_VERSION_MINOR, ATMOSPHERE_RELEASE_VERSION_MICRO);
         {
@@ -923,7 +923,13 @@ namespace ams {
             }
         }
         LogMemoryPools();
-        TryUsbEnumerate();
+        /* v0.7.11: with streaming switched off, the USB port is left to other
+         * apps (masagrator) - taken when it is switched on (UsbFollowStreamSwitch) */
+        if (mitm::applet::g_stream_enabled.load(std::memory_order_relaxed)) {
+            TryUsbEnumerate();
+        } else {
+            mitm::applet::NoteUsbLeftAlone();
+        }
 
         mitm::applet::LogLine("probe fires at t=%u s; frame dump to SD: %s",
                               mitm::applet::g_probe_delay_s,
@@ -1105,6 +1111,39 @@ namespace ams::mitm::applet {
     }
 
     void SetViewerReason(ViewerReason r) { g_viewer_reason.store(r, std::memory_order_relaxed); }
+
+    namespace {
+        constinit bool g_usb_released = false;
+    }
+
+    void NoteUsbLeftAlone() {
+        g_usb_released = true;
+        LogLine("usb: streaming is off - the USB port is left to other apps until it is switched on");
+    }
+
+    /* v0.7.11 (masagrator): streaming off = usb:ds given up, so other USB apps
+     * (installers, MTP) can use the port; on = enumerated again. Only ever
+     * called on the VIC worker thread, the one thread that sends over USB, and
+     * never during a stream session. Webcam mode keeps its camera. */
+    void UsbFollowStreamSwitch() {
+        if (!::ams::g_usb_armed || g_uvc_mode) { return; }
+        const bool on = g_stream_enabled.load(std::memory_order_relaxed);
+        if (!on && !g_usb_released && ::ams::g_usb_ep_in != nullptr) {
+            static_cast<void>(usbDsEndpoint_Cancel(::ams::g_usb_ep_in));
+            if (::ams::g_usb_ep_out != nullptr) { static_cast<void>(usbDsEndpoint_Cancel(::ams::g_usb_ep_out)); }
+            usbDsExit();
+            ::ams::g_usb_iface = nullptr;
+            ::ams::g_usb_ep_in = nullptr;
+            ::ams::g_usb_ep_out = nullptr;
+            g_usb_released = true;
+            LogLine("usb: streaming switched off - USB port released for other apps");
+        } else if (on && g_usb_released) {
+            g_usb_released = false;
+            LogLine("usb: streaming switched on - taking the USB port again");
+            SmUse sm_usb;
+            ::ams::TryUsbEnumerate();
+        }
+    }
 
     bool UsbViewerPresent(u32 timeout_ms) {
         /* v0.7: a viewer connected over the network counts, and goes first */

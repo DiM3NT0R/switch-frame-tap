@@ -252,10 +252,24 @@ static void rec_audio_samples(rec_file_t *f, const int16_t *s, int n)
     }
 }
 
+/* v0.7.11: silence up to a time (48 kHz samples since the recording started).
+ * kingboxnt: a game whose sound never reached the viewer gave an MP4 with an
+ * empty audio track, and MPC-HC would not play it (PotPlayer did). */
+static void rec_audio_fill_to(rec_file_t *f, int64_t to)
+{
+    static const int16_t zero[2 * 480] = { 0 };
+    while (f->ac && f->a_next < to) {
+        const int64_t gap = to - f->a_next;
+        rec_audio_samples(f, zero, gap > 480 ? 480 : (int)gap);
+    }
+}
+
 static void rec_close_file(rec_file_t *f, const char *why)
 {
     if (!f->fc) return;
     if (f->ac) {
+        /* the sound as long as the picture (the last frame's time) */
+        if (f->last_vpts > 0) rec_audio_fill_to(f, av_rescale(f->last_vpts, 48000, 90000) - f->a_off);
         rec_audio_flush_frame(f);
         avcodec_send_frame(f->ac, NULL);
         while (avcodec_receive_packet(f->ac, f->pkt) == 0) {
@@ -383,6 +397,11 @@ static void rec_video_write(rec_file_t *f, const rec_item_t *it)
     f->pkt->data = NULL; f->pkt->size = 0;
     g_rec.secs = (double)rec_us(it->t, f->t0) / 1e6;
     g_rec.mb = (double)f->bytes / 1e6;
+    /* no sound arriving (capture off in the game, audio off): silence a
+     * second behind the picture, so the audio track never ends early or
+     * stays empty; sound that does arrive still goes where it belongs */
+    const int64_t vt = rec_us(it->t, f->t0) * 48 / 1000;
+    if (vt - f->a_next > 48000) rec_audio_fill_to(f, vt - 24000);
 }
 
 static void rec_audio_write(rec_file_t *f, const rec_item_t *it)
@@ -392,13 +411,7 @@ static void rec_audio_write(rec_file_t *f, const rec_item_t *it)
      * did not send (a game with capture off, a hiccup) becomes silence, so
      * the sound never slides earlier than the picture */
     const int64_t want = rec_us(it->t, f->t0) * 48 / 1000 - (int64_t)(it->n / 4);
-    if (want > f->a_next + 4800) {
-        static const int16_t zero[2 * 480] = { 0 };
-        while (f->a_next < want) {
-            const int64_t gap = want - f->a_next;
-            rec_audio_samples(f, zero, gap > 480 ? 480 : (int)gap);
-        }
-    }
+    if (want > f->a_next + 4800) rec_audio_fill_to(f, want);
     rec_audio_samples(f, (const int16_t *)it->data, (int)(it->n / 4));
 }
 

@@ -98,5 +98,8 @@ namespace ams::mitm::applet {
         ViewerReason_Starting    = 10,
     };
     void SetViewerReason(ViewerReason r);
+    /* v0.7.11: USB follows the stream switch (VIC worker thread only) */
+    void UsbFollowStreamSwitch();
+    void NoteUsbLeftAlone();
 
 }

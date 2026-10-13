@@ -24,3 +24,8 @@ make -s -C tools/raw-recv raw-view mp4-check >/dev/null
 tools/raw-recv/raw-view --file "$tmp/tone.sft" --headless --mp4 "$tmp/out.mp4" >/dev/null 2>&1
 tools/raw-recv/mp4-check "$tmp/out.mp4" --expect-tone 440 | tee "$tmp/check.txt" | tail -1 | grep -qx OK
 grep -q "stream 0: 10 packets, 10 frames decoded, 0 errors" "$tmp/check.txt"
+# v0.7.11: no sound at all (a game with capture off) - the audio track is
+# still there and as long as the picture (an empty one: MPC-HC refused the file)
+tools/raw-recv/raw-view --file logs/m83-runI/stream-first10.sft --headless --mp4 "$tmp/silent.mp4" >/dev/null 2>&1
+tools/raw-recv/mp4-check "$tmp/silent.mp4" > "$tmp/silent.txt"
+grep -q "stream 1: [1-9][0-9]* packets" "$tmp/silent.txt"

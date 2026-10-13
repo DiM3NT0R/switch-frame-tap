@@ -1556,7 +1556,21 @@ namespace ams::mitm::applet {
              * an applet such as the browser holds the Applet pool - the donor
              * would take its memory and the applet abort (2210-1024) */
             for (bool said_busy = false;;) {
-                while (!UsbViewerPresent(300) && !ShotRequestPending()) { os::SleepThread(TimeSpan::FromMilliSeconds(700)); }
+                /* a viewer, and (v0.7.11) a game that draws - not the HOME menu */
+                for (;;) {
+                    UsbFollowStreamSwitch();
+                    if (ShotRequestPending()) { break; }
+                    if (UsbViewerPresent(300)) {
+                        const u32 q0 = g_queue_count.load(std::memory_order_relaxed);
+                        os::SleepThread(TimeSpan::FromMilliSeconds(250));
+                        if (g_queue_count.load(std::memory_order_relaxed) != q0) { break; }
+                        ::ams::os::ProcessId app{};
+                        const bool have_app = g_pmdmnt_rc == 0 && R_SUCCEEDED(::ams::pm::dmnt::GetApplicationProcessId(std::addressof(app)));
+                        SetViewerReason(have_app ? ViewerReason_GameHidden : ViewerReason_NoGame);
+                        VicStage("vb:wait_game");
+                    }
+                    os::SleepThread(TimeSpan::FromMilliSeconds(500));
+                }
                 u64 mb = 0;
                 const bool hold = AppletHoldActive();
                 if (!hold && !AppletBusy(std::addressof(mb))) { break; }
@@ -2759,6 +2773,7 @@ namespace ams::mitm::applet {
                     CaptureRelease("live");
                     if (g_ind_buf == nullptr && g_capture_handles == 0) { LogLine("   live: an applet needs the memory - closing the engines now"); return; }
                 }
+                UsbFollowStreamSwitch();
                 /* M99: a screenshot while not streaming: attach just for it */
                 if (TakeShotRequest()) { static_cast<void>(ShotStandalone()); }
                 /* M97: switched off from the overlay - not even a USB probe */
@@ -2804,6 +2819,18 @@ namespace ams::mitm::applet {
                 if (!have_app || pid.value == skip_pid || !presenting) {
                     g_live_state.store(LiveState_WaitGame, std::memory_order_relaxed);
                     SetViewerReason(!have_app ? ViewerReason_NoGame : (pid.value == skip_pid ? ViewerReason_NotFound : ViewerReason_GameHidden));
+                    /* v0.7.11: not drawing (HOME menu) or no game: the donor's
+                     * memory goes back now, not after 15 s - a browser applet
+                     * may open from the HOME menu; set up again when it draws.
+                     * (PR #13 ends the session itself; detach_on_home = 0 keeps
+                     * it all through HOME.) */
+                    if (g_donor_mode && g_detach_on_home && pid.value != skip_pid) {
+                        CaptureRelease("live");
+                        if (g_ind_buf == nullptr && g_capture_handles == 0) {
+                            LogLine("   live: %s - closing the engines, memory back to the system", have_app ? "the game is not on screen" : "no game");
+                            return;
+                        }
+                    }
                     if (!said_wait_game) {
                         LogLine("   live: viewer present; waiting for a game (%s)",
                                 !have_app ? "no application" : (pid.value == skip_pid ? "this game's swapchain was not found" : "not presenting"));
@@ -7833,6 +7860,7 @@ namespace ams::mitm::applet {
         void VicWorkerThread(void *) {
             for (;;) {
                 os::SleepThread(TimeSpan::FromMilliSeconds(200));
+                UsbFollowStreamSwitch();
                 const s32 slot = g_vic_pending.exchange(-1, std::memory_order_acq_rel);
                 if (slot >= 0) {
                     g_last_slot = slot;
