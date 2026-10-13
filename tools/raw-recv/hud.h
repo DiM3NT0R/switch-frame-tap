@@ -182,18 +182,18 @@ static void hud_sgraph(SDL_Renderer *ren, int x, int y, int w, int h, const char
 }
 
 /* W x H: the picture (the renderer's logical size); conn: "USB" / "Network ..." */
-static void hud_draw(SDL_Renderer *ren, int W, int H, const char *conn, const char *rec)
+static void hud_draw(SDL_Renderer *ren, int W, int H, const char *conn, const char *rec, const char *filter)
 {
     if (H <= 0 || text_init(ren) != 0) return;    /* the font, if the menu has not loaded it yet */
     SDL_BlendMode old;
     SDL_GetRenderDrawBlendMode(ren, &old);
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-    /* draw in 720p units: everything scales with the picture */
-    float sx = 1, sy = 1;
-    SDL_RenderGetScale(ren, &sx, &sy);
+    /* Rebuild both viewport and scale after native Metal drawing or resizing. */
+    int logical_w, logical_h;
+    SDL_RenderGetLogicalSize(ren, &logical_w, &logical_h);
     const float k = (float)H / 720.0f;
-    SDL_RenderSetScale(ren, sx * k, sy * k);
     const int w720 = (int)(W / k);
+    SDL_RenderSetLogicalSize(ren, w720, 720);
 
     const Uint64 now = SDL_GetPerformanceCounter();
     const double since_toast = (double)(now - g_hud_toast) / (double)SDL_GetPerformanceFrequency();
@@ -210,9 +210,14 @@ static void hud_draw(SDL_Renderer *ren, int W, int H, const char *conn, const ch
     const SDL_Color fc = hud_fps_colour();
     if (g_hud == HUD_FPS) {
         snprintf(t, sizeof(t), "%.0f fps", g_hs.have ? g_hs.fps : 0.0);
-        fill(ren, 8, 8, text_width(t, 26, 1) + 20, 38, hud_panel);
+        int fw = text_width(filter, 16, 0);
+        int tw = text_width(t, 26, 1);
+        fill(ren, 8, 8, (fw > tw ? fw : tw) + 20, 62, hud_panel);
         hud_text(ren, t, 18, 12, 26, 1, fc, 0);
+        hud_text(ren, filter, 18, 46, 16, 0, hud_ink, 0);
     } else if (g_hud == HUD_GRAPHS) {
+        fill(ren, 10, 254, 470, 30, hud_panel);
+        text_draw(ren, filter, 20, 260, 16, 0, hud_ink, 0);
         fill(ren, 10, 10, 470, 34, hud_panel);
         snprintf(t, sizeof(t), "%.1f fps   %.1f Mbps   latency %.0f ms", g_hs.fps, g_hs.mbps, g_hs.pc + g_hs.con);
         text_draw(ren, t, 20, 16, 19, 1, fc, 0);
@@ -223,7 +228,7 @@ static void hud_draw(SDL_Renderer *ren, int W, int H, const char *conn, const ch
     } else if (g_hud == HUD_FULL) {
         /* numbers on the left, graphs on the right */
         const int lx = 10, ly = 10, lw = 340;
-        fill(ren, lx, ly, lw, 470, hud_panel);
+        fill(ren, lx, ly, lw, 492, hud_panel);
         int y = ly + 10;
         #define HUD_ROW(name, ...) do { text_draw(ren, name, lx + 12, y, 16, 0, hud_dim, 0); \
             snprintf(t, sizeof(t), __VA_ARGS__); text_draw(ren, t, lx + lw - 12, y, 16, 1, hud_ink, 2); y += 22; } while (0)
@@ -232,6 +237,7 @@ static void hud_draw(SDL_Renderer *ren, int W, int H, const char *conn, const ch
         y += 40;
         HUD_ROW("Picture", "%dx%d H.264", g_hs.w, g_hs.h);
         HUD_ROW("Connection", "%s", conn);
+        HUD_ROW("Filter", "%s", filter);
         HUD_ROW("Decoded / shown", "%.1f / %.1f fps", g_hs.dec_fps, g_hs.fps);
         HUD_ROW("Bitrate", "%.1f Mbps", g_hs.mbps);
         HUD_ROW("Latency, total", "%.1f ms", g_hs.pc + g_hs.con);
@@ -261,6 +267,6 @@ static void hud_draw(SDL_Renderer *ren, int W, int H, const char *conn, const ch
         hud_sgraph(ren, gx, gy, gw, gh, "BITRATE", "Mbps", &h_mbps_s, hud_blue, 5.0f);
     }
 
-    SDL_RenderSetScale(ren, sx, sy);
+    SDL_RenderSetLogicalSize(ren, logical_w, logical_h);
     SDL_SetRenderDrawBlendMode(ren, old);
 }

@@ -4,6 +4,7 @@
 # raw-view decodes H.264 (M83 nvstream) when libavcodec is found; without it it
 # still shows the raw and packed-4:2:0 streams and says so for H.264 packets.
 CC      ?= cc
+.DEFAULT_GOAL := all
 CFLAGS  ?= -O2 -Wall -Wextra
 BASE     = libusb-1.0 sdl2
 H264    := $(shell pkg-config --exists libavcodec libavutil && echo 1)
@@ -20,10 +21,21 @@ VIEW_CFLAGS = $(shell pkg-config --cflags $(BASE))
 VIEW_LIBS   = $(shell pkg-config --libs $(BASE))
 endif
 
+ifeq ($(shell uname -s),Darwin)
+VIEW_CFLAGS += $(shell pkg-config --cflags libswscale)
+VIEW_LIBS += $(shell pkg-config --libs libswscale)
+CLARITY_OBJ = clarity.o
+VIEW_LIBS += -framework Metal -framework QuartzCore -framework Foundation
+clarity_shader.h: clarity.metal
+	xxd -i $< > $@
+clarity.o: clarity.m clarity.h clarity_shader.h
+	$(CC) $(CFLAGS) $(shell pkg-config --cflags sdl2) -fobjc-arc -c -o $@ $<
+endif
+
 all: raw-view raw-recv
 
-raw-view: raw-view.c record.h menu.h hud.h font_dejavu.h
-	$(CC) $(CFLAGS) $(VIEW_CFLAGS) -o $@ $< $(VIEW_LIBS)
+raw-view: raw-view.c record.h menu.h hud.h font_dejavu.h clarity.h $(CLARITY_OBJ)
+	$(CC) $(CFLAGS) $(VIEW_CFLAGS) -o $@ $< $(CLARITY_OBJ) $(VIEW_LIBS)
 	@echo "raw-view built $(if $(filter 1,$(H264)),WITH,WITHOUT) H.264 (libavcodec)"
 
 # v0.4: webcam-mode check (V4L2 + libavcodec)
@@ -37,10 +49,16 @@ mp4-check: mp4-check.c
 raw-recv: raw-recv.c
 	$(CC) $(CFLAGS) $(shell pkg-config --cflags libusb-1.0) -o $@ $< $(shell pkg-config --libs libusb-1.0)
 
+hud-test: hud-test.c raw-view.c hud.h menu.h clarity.h $(CLARITY_OBJ)
+	$(CC) $(CFLAGS) $(VIEW_CFLAGS) -o /tmp/frame-tap-hud-test $< $(CLARITY_OBJ) $(VIEW_LIBS)
+
+usb-test: usb-test.c raw-view.c hud.h menu.h clarity.h $(CLARITY_OBJ)
+	$(CC) $(CFLAGS) $(VIEW_CFLAGS) -o /tmp/frame-tap-usb-test $< $(CLARITY_OBJ) $(VIEW_LIBS)
+
 test: raw-view
 	python3 ../sft_stream_test.py
 
 clean:
-	rm -f raw-view raw-recv
+	rm -f raw-view raw-recv clarity.o clarity_shader.h
 
-.PHONY: all test clean
+.PHONY: all test clean hud-test usb-test

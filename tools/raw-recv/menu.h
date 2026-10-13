@@ -96,6 +96,8 @@ static void menu_draw(SDL_Renderer *ren)
     text_init(ren);
     SDL_RenderSetLogicalSize(ren, 1280, 720);
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(ren, bg.r, bg.g, bg.b, bg.a);
+    SDL_RenderClear(ren); /* Clear letterbox bars and all previously presented pixels. */
     fill(ren, 0, 0, 1280, 720, bg);
 
     text_draw(ren, "Switch Frame Tap", 640, 34, 56, 1, ink, 1);

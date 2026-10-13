@@ -49,6 +49,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <signal.h>
+#include <math.h>
 #ifdef _WIN32
 /* v0.2: the Windows build (tools/raw-recv/build-windows.sh). libusb's Windows
  * package puts libusb.h at the top of its include dir; SDL must not replace
@@ -70,9 +71,20 @@
 #include <fcntl.h>
 #endif
 #include <SDL2/SDL.h>
+#include "clarity.h"
+#ifdef __APPLE__
+#define VIDEO_WINDOW_FLAGS (SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI)
+#else
+#define VIDEO_WINDOW_FLAGS (SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE)
+#endif
 #ifdef SFT_H264
 #include <libavcodec/avcodec.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/pixdesc.h>
+#ifdef __APPLE__
+#include <libswscale/swscale.h>
+#endif
 #endif
 
 #define SFT_VID 0x1209
@@ -94,12 +106,45 @@ typedef struct {
 
 static volatile sig_atomic_t g_quit = 0;
 static int g_app = 0;               /* --app: survive the console leaving the bus */
-static int g_lost = 0;              /* --app: the console left; wait for it again */
+static volatile sig_atomic_t g_lost = 0; /* reader -> UI: reconnect transport */
+static volatile int g_rd_stop = 0;
 static int g_paced = 0;             /* --paced: a recording fed through the live pipeline at 60 fps, looped (tests) */
 static double g_run_secs = 0;       /* --seconds: stop the live pipeline after this long (tests) */
 static const char *g_shot = NULL;    /* --shot: save the last frame drawn (overlay included) as BMP (tests) */
 static const char *g_mp4 = NULL;     /* --mp4 FILE: record into FILE from the start (tests) */
 static const char *g_rec_dir = NULL; /* --rec-dir DIR: where R saves (default Videos/Switch Frame Tap) */
+#ifdef __APPLE__
+static int g_clarity = 1;
+#else
+static int g_clarity = 0;
+#endif
+static float g_sharpness = 0.45f;
+static int g_clarity_cli, g_sharpness_cli;
+static int g_view_scale = 1;
+
+static const char *video_filter_label(void)
+{
+    static char label[80];
+    int cubic = 0;
+    float strength = 0;
+    if (!g_clarity) return "Bilinear / enhancement off";
+    if (!clarity_status(&cubic, &strength)) return "Bilinear / fallback";
+    snprintf(label, sizeof(label), "%s + RCAS %.0f%%", cubic ? "Catmull-Rom" : "Bilinear", strength * 100);
+    return label;
+}
+
+static void size_video_window(SDL_Window *win, int width, int height)
+{
+    SDL_Rect usable;
+    if (SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(win), &usable) == 0) {
+        double fit = 1.0, fw = (usable.w - 32.0) / width, fh = (usable.h - 48.0) / height;
+        if (fw < fit) fit = fw;
+        if (fh < fit) fit = fh;
+        width = width * fit > 1 ? (int)(width * fit) : 1;
+        height = height * fit > 1 ? (int)(height * fit) : 1;
+    }
+    SDL_SetWindowSize(win, width, height);
+}
 
 /* ---- v0.3: game audio ------------------------------------------------------
  * The console sends the sound since the last frame as its own packet before
@@ -270,6 +315,9 @@ static void prefs_load(void)
         if (sscanf(line, "last_ip=%63s", v) == 1) snprintf(g_last_ip, sizeof(g_last_ip), "%.63s", v);
         int hm;
         if (sscanf(line, "stats_overlay=%d", &hm) == 1 && hm >= 0 && hm < HUD_MODES) g_hud = hm;
+        if (!g_clarity_cli && sscanf(line, "clarity=%d", &hm) == 1) g_clarity = hm != 0;
+        float sharp;
+        if (!g_sharpness_cli && sscanf(line, "sharpness=%f", &sharp) == 1 && isfinite(sharp) && sharp >= 0 && sharp <= 1) g_sharpness = sharp;
     }
     fclose(f);
 }
@@ -281,6 +329,7 @@ static void prefs_save(void)
     FILE *f = fopen(path, "w");
     if (!f) return;
     fprintf(f, "connection=%s\nlast_ip=%s\nstats_overlay=%d\n", g_conn == CONN_NET ? "network" : "usb", g_last_ip, g_hud);
+    fprintf(f, "clarity=%d\nsharpness=%.2f\n", g_clarity, g_sharpness);
     fclose(f);
 }
 
@@ -449,8 +498,14 @@ static int net_try_connect(void)
 }
 
 /* close whichever transport is open */
+static uint8_t g_usb_readbuf[0x40000];
+static size_t g_usb_readpos, g_usb_readlen;
+static int g_usb_stall_retry;
+
 static void transport_close(void)
 {
+    g_usb_readpos = g_usb_readlen = 0;
+    g_usb_stall_retry = 0;
     if (g_usb) { libusb_release_interface(g_usb, 0); libusb_close(g_usb); g_usb = NULL; }
     if (g_sock != SOCK_BAD) { sock_close(g_sock); g_sock = SOCK_BAD; g_net_peer[0] = 0; }
 }
@@ -490,20 +545,49 @@ static int read_exact(uint8_t *dst, size_t n, int ms)
         return g_quit ? -1 : (int)done;
     }
     size_t done = 0;
-    while (done < n && !g_quit) {
-        int got = 0;
-        int chunk = (int)((n - done) > 0x40000 ? 0x40000 : (n - done));
-        int rc = libusb_bulk_transfer(g_usb, SFT_EP_IN, dst + done, chunk, &got, ms);
-        if (rc == 0 || rc == LIBUSB_ERROR_TIMEOUT) {
-            if (got == 0 && rc == LIBUSB_ERROR_TIMEOUT) return (done > 0) ? -2 : 0;
-            done += (size_t)got;
-            continue;
+    Uint64 partial_start = 0;
+    const Uint64 idle_start = SDL_GetTicks64();
+    int io_retries = 0;
+    while (done < n && !g_quit && !g_rd_stop && !g_lost) {
+        if (g_usb_readpos == g_usb_readlen) {
+            int got = 0;
+            // Always accept whole USB packets, even when the parser needs 32 bytes.
+            int rc = libusb_bulk_transfer(g_usb, SFT_EP_IN, g_usb_readbuf,
+                                         sizeof(g_usb_readbuf), &got, ms > 100 ? 100 : ms);
+            if ((rc == LIBUSB_ERROR_IO || rc == LIBUSB_ERROR_INTERRUPTED) && !got && io_retries++ < 3) {
+                SDL_Delay(10);
+                continue;
+            }
+            if (rc == LIBUSB_ERROR_PIPE && !g_usb_stall_retry) {
+                g_usb_stall_retry = 1;
+                int cleared = libusb_clear_halt(g_usb, SFT_EP_IN);
+                fprintf(stderr, "usb: clearing stalled endpoint: %s\n", libusb_error_name(cleared));
+                if (cleared == 0) continue;
+            }
+            if (rc != 0 && rc != LIBUSB_ERROR_TIMEOUT) {
+                fprintf(stderr, "usb: %s - reopening transport\n", libusb_error_name(rc));
+                if (g_app) g_lost = 1; else g_quit = 1;
+                return -3;
+            }
+            g_usb_readpos = 0; g_usb_readlen = (size_t)got;
+            if (!got) {
+                if (!done) {
+                    if (SDL_GetTicks64() - idle_start < (Uint64)ms) continue;
+                    return 0;
+                }
+                // Preserve partial data across idle timeouts, but bound a dead stream.
+                if (SDL_GetTicks64() - partial_start < 5000) continue;
+                if (g_app) g_lost = 1; else g_quit = 1;
+                return -2;
+            }
+            g_usb_stall_retry = 0;
+            io_retries = 0;
         }
-        /* NO_DEVICE means the console left the bus (powered off, rebooted):
-         * exit cleanly instead of spinning on errors */
-        if (rc == LIBUSB_ERROR_NO_DEVICE) { if (g_app) g_lost = 1; else g_quit = 1; return -3; }
-        fprintf(stderr, "bulk read: %s\n", libusb_error_name(rc));
-        return -1;
+        size_t take = n - done;
+        if (take > g_usb_readlen - g_usb_readpos) take = g_usb_readlen - g_usb_readpos;
+        memcpy(dst + done, g_usb_readbuf + g_usb_readpos, take);
+        if (!done) partial_start = SDL_GetTicks64();
+        g_usb_readpos += take; done += take;
     }
     return g_quit ? -1 : (int)done;
 }
@@ -522,18 +606,27 @@ static pkt_t g_q[QN];
 static int g_qh = 0, g_qn = 0, g_qmax = 0;
 static SDL_mutex *g_qm = NULL;
 static SDL_cond *g_q_put = NULL, *g_q_get = NULL;
-static volatile int g_rd_stop = 0;
 static SDL_Thread *g_rd = NULL;
 
 static int reader_main(void *arg)
 {
     (void)arg;
+    sft_hdr_t hdr;
+    size_t header_bytes = 0, discarded = 0;
     while (!g_quit && !g_rd_stop && !g_lost) {
-        sft_hdr_t hdr;
-        const int r = read_exact((uint8_t *)&hdr, sizeof(hdr), 100);
+        const int r = read_exact((uint8_t *)&hdr + header_bytes, sizeof(hdr) - header_bytes, 100);
         if (r <= 0) continue;
+        header_bytes += (size_t)r;
+        if (header_bytes != sizeof(hdr)) continue;
+        if (hdr.magic != SFT_MAGIC || hdr.version != 2 || (hdr.flags & ~15u) || hdr.length > 64u*1024*1024) {
+            memmove(&hdr, (uint8_t *)&hdr + 1, sizeof(hdr) - 1);
+            header_bytes = sizeof(hdr) - 1;
+            discarded++;
+            continue;
+        }
+        header_bytes = 0;
+        if (discarded) { fprintf(stderr, "usb/stream: resynchronized after %zu bytes\n", discarded); discarded = 0; }
         const Uint64 t = SDL_GetPerformanceCounter();
-        if (hdr.magic != SFT_MAGIC) { fprintf(stderr, "bad magic 0x%08x, resyncing\n", hdr.magic); continue; }
         if (hdr.length == 0 || hdr.length > 64u*1024*1024) continue;
         if (hdr.flags & SFT_FLAG_AUDIO) {
             static uint8_t abuf[64 * 1024];
@@ -620,16 +713,69 @@ static int reader_pending(void)
 }
 
 #ifdef SFT_H264
-typedef struct { AVCodecContext *c; AVPacket *pkt; AVFrame *frm; } h264_t;
+typedef struct {
+    AVCodecContext *c;
+    AVPacket *pkt;
+    AVFrame *frm, *swfrm, *yuvfrm;
+#ifdef __APPLE__
+    struct SwsContext *sws;
+#endif
+    AVBufferRef *hwdev;
+    enum AVPixelFormat hwfmt;
+    int videotoolbox;
+    int hw_frame_logged;
+    int sw_format_logged;
+} h264_t;
 
-static int h264_open(h264_t *d, int low_latency, int threads)
+static enum AVPixelFormat h264_get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *formats)
+{
+    h264_t *d = ctx->opaque;
+    for (const enum AVPixelFormat *p = formats; *p != AV_PIX_FMT_NONE; p++) {
+        if (*p == d->hwfmt) return *p;
+    }
+    for (const enum AVPixelFormat *p = formats; *p != AV_PIX_FMT_NONE; p++) {
+        const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(*p);
+        if (desc && !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
+            fprintf(stderr, "decoder: VideoToolbox rejected stream; using software %s\n", desc->name);
+            d->videotoolbox = 0;
+            return *p;
+        }
+    }
+    return AV_PIX_FMT_NONE;
+}
+
+static int h264_open(h264_t *d, int low_latency, int threads, int use_videotoolbox)
 {
     const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
     if (!codec) return -1;
     d->c = avcodec_alloc_context3(codec);
     d->pkt = av_packet_alloc();
     d->frm = av_frame_alloc();
-    if (!d->c || !d->pkt || !d->frm) return -1;
+    d->swfrm = av_frame_alloc();
+    d->yuvfrm = av_frame_alloc();
+    if (!d->c || !d->pkt || !d->frm || !d->swfrm || !d->yuvfrm) return -1;
+    d->hwfmt = AV_PIX_FMT_NONE;
+    if (use_videotoolbox) {
+        for (int i = 0;; i++) {
+            const AVCodecHWConfig *cfg = avcodec_get_hw_config(codec, i);
+            if (!cfg) break;
+            if (cfg->device_type == AV_HWDEVICE_TYPE_VIDEOTOOLBOX &&
+                (cfg->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
+                d->hwfmt = cfg->pix_fmt;
+                break;
+            }
+        }
+        if (d->hwfmt != AV_PIX_FMT_NONE &&
+            av_hwdevice_ctx_create(&d->hwdev, AV_HWDEVICE_TYPE_VIDEOTOOLBOX, NULL, NULL, 0) == 0) {
+            d->c->hw_device_ctx = av_buffer_ref(d->hwdev);
+            d->c->opaque = d;
+            d->c->get_format = h264_get_hw_format;
+            d->videotoolbox = d->c->hw_device_ctx != NULL;
+        }
+        fprintf(stderr, "decoder: %s\n", d->videotoolbox ? "VideoToolbox configured" : "VideoToolbox unavailable; using software");
+    } else {
+        fprintf(stderr, "decoder: software (requested)\n");
+    }
     if (low_latency) {
         /* every packet is a whole IDR frame: output it the moment it decodes */
         d->c->flags |= AV_CODEC_FLAG_LOW_DELAY;
@@ -653,14 +799,66 @@ static int h264_decode(h264_t *d, uint8_t *buf, int len, int64_t pts)
     if (rc < 0 && rc != AVERROR(EAGAIN)) return rc;
     rc = avcodec_receive_frame(d->c, d->frm);
     if (rc == AVERROR(EAGAIN)) return 0;
-    return rc < 0 ? rc : 1;
+    if (rc < 0) return rc;
+    if (d->videotoolbox && d->frm->format == d->hwfmt) {
+        if (!d->hw_frame_logged) {
+            fprintf(stderr, "decoder: first frame decoded by VideoToolbox (%s), transferring to system memory\n",
+                    av_get_pix_fmt_name(d->hwfmt));
+            d->hw_frame_logged = 1;
+        }
+        rc = av_hwframe_transfer_data(d->swfrm, d->frm, 0);
+        if (rc < 0) return rc;
+        rc = av_frame_copy_props(d->swfrm, d->frm);
+        if (rc < 0) return rc;
+        av_frame_unref(d->frm);
+        av_frame_move_ref(d->frm, d->swfrm);
+    }
+    if (!d->sw_format_logged) {
+        fprintf(stderr, "decoder: software frame format %s\n",
+                av_get_pix_fmt_name((enum AVPixelFormat)d->frm->format));
+        d->sw_format_logged = 1;
+    }
+    if (d->frm->format != AV_PIX_FMT_YUV420P) {
+#ifdef __APPLE__
+        d->sws = sws_getCachedContext(d->sws,
+                d->frm->width, d->frm->height, (enum AVPixelFormat)d->frm->format,
+                d->frm->width, d->frm->height, AV_PIX_FMT_YUV420P,
+                SWS_BILINEAR, NULL, NULL, NULL);
+        if (!d->sws) return AVERROR(ENOMEM);
+        av_frame_unref(d->yuvfrm);
+        d->yuvfrm->format = AV_PIX_FMT_YUV420P;
+        d->yuvfrm->width = d->frm->width;
+        d->yuvfrm->height = d->frm->height;
+        rc = av_frame_get_buffer(d->yuvfrm, 32);
+        if (rc < 0) return rc;
+        rc = av_frame_copy_props(d->yuvfrm, d->frm);
+        if (rc < 0) return rc;
+        if (sws_scale(d->sws, (const uint8_t *const *)d->frm->data,
+                      d->frm->linesize, 0, d->frm->height,
+                      d->yuvfrm->data, d->yuvfrm->linesize) != d->frm->height)
+            return AVERROR_EXTERNAL;
+        av_frame_unref(d->frm);
+        av_frame_move_ref(d->frm, d->yuvfrm);
+#else
+        fprintf(stderr, "decoder: unsupported software pixel format %s\n", av_get_pix_fmt_name(d->frm->format));
+        return AVERROR(ENOSYS);
+#endif
+    }
+    return 1;
 }
 
 static void h264_close(h264_t *d)
 {
     av_frame_free(&d->frm);
+    av_frame_free(&d->swfrm);
+    av_frame_free(&d->yuvfrm);
+#ifdef __APPLE__
+    sws_freeContext(d->sws);
+#endif
     av_packet_free(&d->pkt);
     avcodec_free_context(&d->c);
+    av_buffer_unref(&d->hwdev);
+    d->videotoolbox = 0;
 }
 #endif
 
@@ -733,11 +931,25 @@ static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
             snprintf(t, sizeof(t), "Switch Frame Tap%s", rs[0] ? rs : "  |  recording stopped");
             SDL_SetWindowTitle(win, t);
             if (g_menu) menu_draw(ren);
-        } else if (e.type == SDL_KEYDOWN && (e.key.keysym.sym == SDLK_o || e.key.keysym.sym == SDLK_F3) && !e.key.repeat) {
+        } else if (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_O || e.key.keysym.sym == SDLK_o || e.key.keysym.sym == SDLK_F3) && !e.key.repeat) {
             /* v0.7.2: the stats overlay - off, FPS, graphs, full */
             hud_cycle();
             prefs_save();
             fprintf(stderr, "\nstats overlay: %s\n", hud_mode_name[g_hud]);
+            SDL_Event redraw = {0};
+            redraw.type = SDL_WINDOWEVENT;
+            redraw.window.windowID = SDL_GetWindowID(win);
+            redraw.window.event = SDL_WINDOWEVENT_EXPOSED;
+            SDL_PushEvent(&redraw);
+        } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_F8 && !e.key.repeat) {
+            g_clarity = !g_clarity;
+            prefs_save();
+            fprintf(stderr, "\nclarity: %s, sharpness %.0f%%\n", g_clarity ? "on" : "off", g_sharpness * 100);
+        } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_F9 && !e.key.repeat) {
+            g_sharpness = g_sharpness < 0.4f ? 0.45f : g_sharpness < 0.6f ? 0.7f : 0.25f;
+            g_clarity = 1;
+            prefs_save();
+            fprintf(stderr, "\nclarity: on, sharpness %.0f%%\n", g_sharpness * 100);
         } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_m) {
             g_mute = !g_mute;
             if (g_adev) { SDL_ClearQueuedAudio(g_adev); SDL_PauseAudioDevice(g_adev, 1); g_a_paused = 1; }
@@ -747,7 +959,15 @@ static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
             /* resized or uncovered with no new frame: draw the last one again */
             if (g_menu) { menu_draw(ren); continue; }
             SDL_RenderClear(ren);
-            if (tex) SDL_RenderCopy(ren, tex, NULL, NULL);
+            if (tex && (!g_clarity || !clarity_draw(ren, NULL, NULL, 0, 0, g_sharpness))) SDL_RenderCopy(ren, tex, NULL, NULL);
+            if (tex && (g_hud != HUD_OFF || g_hud_toast)) {
+                int w, h;
+                if (SDL_QueryTexture(tex, NULL, NULL, &w, &h) == 0) {
+                    char rs[200];
+                    rec_status(rs, sizeof(rs));
+                    hud_draw(ren, w, h, g_conn == CONN_NET ? "Network" : "USB", rs[0] ? rs + 5 : "", video_filter_label());
+                }
+            }
             SDL_RenderPresent(ren);
         }
     }
@@ -919,16 +1139,16 @@ static int decoder_main(void *arg)
 }
 
 static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int app,
-                    int low_latency, int threads, FILE *rec, FILE *es)
+                    int low_latency, int threads, int use_videotoolbox, FILE *rec, FILE *es)
 {
     h264_t dec = {0};
-    if (h264_open(&dec, low_latency, threads) != 0) { fprintf(stderr, "libavcodec H.264 decoder unavailable\n"); return 1; }
+    if (h264_open(&dec, low_latency, threads, use_videotoolbox) != 0) { fprintf(stderr, "libavcodec H.264 decoder unavailable\n"); return 1; }
     if (!win) {
         if (SDL_Init(SDL_INIT_VIDEO) != 0) { fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1; }
         SDL_SetYUVConversionMode(SDL_YUV_CONVERSION_BT709);
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
         win = SDL_CreateWindow("Switch Frame Tap", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                               1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+                               1280, 720, VIDEO_WINDOW_FLAGS);
         ren = win ? SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC) : NULL;
         if (!ren) { fprintf(stderr, "SDL window: %s\n", SDL_GetError()); return 1; }
     }
@@ -945,6 +1165,7 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
     if (SDL_GetRendererInfo(ren, &ri) == 0) {
         fprintf(stderr, "renderer: %s%s\n", ri.name, (ri.flags & SDL_RENDERER_PRESENTVSYNC) ? ", vsync" : ", NO vsync");
     }
+    if (g_clarity) clarity_init(ren);
     for (int i = 0; i < FQ; i++) g_fq[i] = av_frame_alloc();
     if (!g_fm) { g_fm = SDL_CreateMutex(); g_f_put = SDL_CreateCond(); }
     rec_init(g_rec_dir, g_mp4);
@@ -973,12 +1194,23 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
         if (g_lost) {
             /* the Switch left the bus (rebooted, cable out) */
             reader_stop();
+            g_dec_stop = 1;
+            SDL_WaitThread(dth, NULL);
+            dth = NULL;
+            for (int i = 0; i < FQ; i++) av_frame_unref(g_fq[i]);
+            g_fh = g_fn = 0;
+            avcodec_flush_buffers(dec.c);
+            if (g_adev) SDL_ClearQueuedAudio(g_adev);
             transport_close();
+            SDL_Delay(500); // Back off before reclaiming a failed USB transport.
             fprintf(stderr, "\nthe Switch disconnected%s\n", app ? " - waiting for it" : "");
             if (!app) break;
             g_menu = 1;
             if (!app_wait_device(ctx, win, ren, tex)) break;
             g_lost = 0;
+            g_dec_stop = 0;
+            dth = SDL_CreateThread(decoder_main, "decoder", &da);
+            if (!dth) { g_quit = 1; break; }
             reader_start();
             continue;
         }
@@ -1031,14 +1263,16 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
             if (!tex || (uint32_t)show->width != W || (uint32_t)show->height != H) {
                 if (tex) SDL_DestroyTexture(tex);
                 W = (uint32_t)show->width; H = (uint32_t)show->height;
-                if (!(SDL_GetWindowFlags(win) & (SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_MAXIMIZED))) SDL_SetWindowSize(win, (int)W, (int)H);
+                if (!(SDL_GetWindowFlags(win) & (SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_MAXIMIZED))) size_video_window(win, (int)W * g_view_scale, (int)H * g_view_scale);
                 tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, (int)W, (int)H);
                 SDL_RenderSetLogicalSize(ren, (int)W, (int)H);
                 fprintf(stderr, "\nstream: %ux%u H.264\n", W, H);
             }
             SDL_UpdateYUVTexture(tex, NULL, show->data[0], show->linesize[0], show->data[1], show->linesize[1], show->data[2], show->linesize[2]);
             SDL_RenderClear(ren);
-            SDL_RenderCopy(ren, tex, NULL, NULL);
+            const uint8_t *planes[3] = {show->data[0], show->data[1], show->data[2]};
+            if (!g_clarity || !clarity_draw(ren, planes, show->linesize, (int)W, (int)H, g_sharpness))
+                SDL_RenderCopy(ren, tex, NULL, NULL);
             if (rec_active()) {                /* v0.5: a red dot while recording (not in the file) */
                 const int d = (int)(H / 40 > 12 ? H / 40 : 12);
                 SDL_SetRenderDrawColor(ren, 230, 40, 40, 255);
@@ -1051,7 +1285,7 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
                 rec_status(rs, sizeof(rs));
                 if (g_conn == CONN_NET) snprintf(cs, sizeof(cs), "Network%s%s", net_peer_for_menu()[0] ? " " : "", net_peer_for_menu());
                 else snprintf(cs, sizeof(cs), "USB");
-                hud_draw(ren, (int)W, (int)H, cs, rs[0] ? rs + 5 : "");
+                hud_draw(ren, (int)W, (int)H, cs, rs[0] ? rs + 5 : "", video_filter_label());
                 SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
             }
             if (g_shot && g_run_secs > 0 && (double)(SDL_GetPerformanceCounter() - t_start) / (double)freq >= g_run_secs - 1.0) {
@@ -1121,7 +1355,7 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
 
     reader_stop();
     g_dec_stop = 1;
-    SDL_WaitThread(dth, NULL);
+    if (dth) SDL_WaitThread(dth, NULL);
     rec_join();                               /* v0.5: finish and close a recording */
     const double secs = (double)(SDL_GetPerformanceCounter() - t_start) / (double)freq;
     fprintf(stderr, "\n%ld packets, %ld decoded, %ld shown, %ld skipped (latency cap), %ld not decoded, %ld lost, %.1f MB in %.0f s\n",
@@ -1139,6 +1373,7 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
     if (rec) fclose(rec);
     if (es) fclose(es);
     if (tex) SDL_DestroyTexture(tex);
+    clarity_close();
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();
@@ -1151,7 +1386,7 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
 
 int main(int argc, char **argv)
 {
-    int swap_rb = 0, scale = 1, headless = 0, low_latency = 0, threads = 2;
+    int swap_rb = 0, scale = 1, headless = 0, low_latency = 0, threads = 2, use_videotoolbox = 1;
     long max_frames = 0;
     const char *file = NULL, *record = NULL, *h264_out = NULL, *net_host = NULL;
     for (int i = 1; i < argc; i++) {
@@ -1163,6 +1398,20 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) max_frames = atol(argv[++i]);
         else if (!strcmp(argv[i], "--headless")) headless = 1;
         else if (!strcmp(argv[i], "--low-latency")) low_latency = 1;
+        else if (!strcmp(argv[i], "--software")) use_videotoolbox = 0;
+        else if (!strcmp(argv[i], "--clarity") && i + 1 < argc) {
+            const char *mode = argv[++i];
+            if (strcmp(mode, "on") && strcmp(mode, "off")) { fprintf(stderr, "--clarity expects on or off\n"); return 2; }
+            g_clarity = !strcmp(mode, "on"); g_clarity_cli = 1;
+        }
+        else if (!strcmp(argv[i], "--sharpness") && i + 1 < argc) {
+            char *end;
+            float sharp = strtof(argv[++i], &end);
+            if (*end || !isfinite(sharp) || sharp < 0 || sharp > 1 || end == argv[i]) {
+                fprintf(stderr, "--sharpness expects a number from 0 to 1\n"); return 2;
+            }
+            g_sharpness = sharp; g_sharpness_cli = 1;
+        }
         else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--app")) g_app = 1;
         else if (!strcmp(argv[i], "--paced")) g_paced = 1;
@@ -1178,6 +1427,7 @@ int main(int argc, char **argv)
         else { fprintf(stderr, "unknown option %s (see the comment at the top of raw-view.c)\n", argv[i]); return 2; }
     }
     if (scale < 1) scale = 1;
+    g_view_scale = scale;
 #ifdef _WIN32
     /* double-clicked from Explorer: the app mode */
     if (argc == 1) g_app = 1;
@@ -1215,7 +1465,7 @@ int main(int argc, char **argv)
         SDL_SetYUVConversionMode(SDL_YUV_CONVERSION_BT709);
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
         win = SDL_CreateWindow("Switch Frame Tap", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                               1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+                               1280, 720, VIDEO_WINDOW_FLAGS);
         ren = win ? SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC) : NULL;
         if (!ren) {
             fprintf(stderr, "SDL window: %s\n", SDL_GetError());
@@ -1224,6 +1474,7 @@ int main(int argc, char **argv)
         }
         rec_init(g_rec_dir, g_mp4);
         prefs_load();                      /* v0.7: USB or network, the last address */
+        if (g_clarity) clarity_init(ren);
         net_init();
         menu_draw(ren);
         if (!app_wait_device(ctx, win, ren, NULL)) { SDL_Quit(); libusb_exit(ctx); return 0; }
@@ -1265,13 +1516,13 @@ int main(int argc, char **argv)
     if (g_usb || g_sock != SOCK_BAD || (g_in && g_paced)) {
         (void)headless; (void)max_frames;
         if (!g_usb && g_sock == SOCK_BAD) reader_start();            /* --paced: the recording goes through the same reader thread */
-        return run_live(ctx, win, ren, g_app, low_latency, threads, rec, es);
+        return run_live(ctx, win, ren, g_app, low_latency, threads, use_videotoolbox, rec, es);
     }
 #endif
 
 #ifdef SFT_H264
     h264_t dec = {0};
-    int dec_ok = (h264_open(&dec, low_latency, threads) == 0);
+    int dec_ok = (h264_open(&dec, low_latency, threads, use_videotoolbox) == 0);
     if (!dec_ok) fprintf(stderr, "libavcodec H.264 decoder unavailable - H.264 packets will be skipped\n");
 #endif
 
@@ -1413,7 +1664,7 @@ int main(int argc, char **argv)
             /* the stream is BT.709 limited range (VUI says so too) */
             SDL_SetYUVConversionMode(SDL_YUV_CONVERSION_BT709);
             win = SDL_CreateWindow("switch-frame-tap", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                   (int)(hdr.width*scale), (int)(hdr.height*scale), SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+                                   (int)(hdr.width*scale), (int)(hdr.height*scale), VIDEO_WINDOW_FLAGS);
             /* M86b: SDL scales nearest-neighbour by default, which made edges
              * look pixelated in a resized or maximized window. Linear, and keep
              * 16:9 with letterboxing instead of stretching. */
@@ -1425,7 +1676,7 @@ int main(int argc, char **argv)
         if (!tex || hdr.width != W || hdr.height != H || want_fmt != fmt) {
             if (tex) SDL_DestroyTexture(tex);
             W = hdr.width; H = hdr.height; fmt = want_fmt;
-            SDL_SetWindowSize(win, (int)(W*scale), (int)(H*scale));
+            size_video_window(win, (int)(W*scale), (int)(H*scale));
             tex = SDL_CreateTexture(ren, fmt, SDL_TEXTUREACCESS_STREAMING, (int)W, (int)H);
             SDL_RenderSetLogicalSize(ren, (int)W, (int)H);
             fprintf(stderr, "\nstream: %ux%u %s\n", W, H, is_h264 ? "H.264" : packed420 ? "packed 4:2:0" : "raw");
@@ -1458,7 +1709,8 @@ int main(int argc, char **argv)
             SDL_UpdateTexture(tex, NULL, payload, (int)hdr.stride);
         }
         SDL_RenderClear(ren);
-        SDL_RenderCopy(ren, tex, NULL, NULL);
+        if (!is_h264 || !g_clarity || !clarity_draw(ren, planes, pitches, (int)W, (int)H, g_sharpness))
+            SDL_RenderCopy(ren, tex, NULL, NULL);
         SDL_RenderPresent(ren);
         shown++;
 
@@ -1519,6 +1771,7 @@ int main(int argc, char **argv)
     if (rec) fclose(rec);
     if (es) fclose(es);
     if (tex) SDL_DestroyTexture(tex);
+    clarity_close();
     if (ren) SDL_DestroyRenderer(ren);
     if (win) SDL_DestroyWindow(win);
     SDL_Quit();

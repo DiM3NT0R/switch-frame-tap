@@ -13,6 +13,8 @@ ref/*
 
 # compiled PC-side receiver (build it with the one-liner in its README)
 tools/raw-recv/raw-recv
+tools/raw-recv/clarity.o
+tools/raw-recv/clarity_shader.h
 tools/nvsetup-dump
 
 # host-side tool bytecode
