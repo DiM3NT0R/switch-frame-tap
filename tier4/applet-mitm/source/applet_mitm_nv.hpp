@@ -98,8 +98,9 @@ namespace ams::mitm::applet {
      * four variants, 10 s each, and logs each window's sizes and intra share */
     extern bool g_nvab_armed;
     extern bool g_live_armed;     /* M86: stream whenever a viewer and a game are there */
-    /* detach_on_home / dethome: end the live session when queueBuffer stalls
-     * (HOME), free donor memory, then RunLive reattaches on the next present. */
+    /* Default on: end the live session when queueBuffer stalls (HOME), free
+     * donor memory, then RunLive reattaches on the next present. nodethome
+     * disables it. */
     extern bool g_detach_on_home;
     extern bool g_nv1080_armed;   /* M90: 1080p encoder probe (frame 0, GOP, timed) */
     extern u32  g_nv1080_n;

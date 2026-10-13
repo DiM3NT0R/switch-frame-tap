@@ -171,11 +171,11 @@ int main() {
     ExpectRelease("screenshot = 1\nscreenshot_buttons = 9\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 shot shotkey=0 audio");
     /* a comment word must not arm a flag the way an arm-file token would */
     ExpectRelease("# grc dump nvp\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio");
-    /* detach_on_home=1 emits dethome; off by default (stock HOME keep-alive) */
-    ExpectRelease("detach_on_home = 1\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio dethome");
-    ExpectRelease("detach_on_home = 0\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio");
-    ExpectContains("vic live dethome wait=20\n", "dethome", true);
-    ExpectContains("vic live wait=20\n", "dethome", false);
+    /* default on; only detach_on_home=0 emits nodethome */
+    ExpectRelease("detach_on_home = 0\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio nodethome");
+    ExpectRelease("detach_on_home = 1\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio");
+    ExpectContains("vic live nodethome wait=20\n", "nodethome", true);
+    ExpectContains("vic live wait=20\n", "nodethome", false);
 
     std::printf("%s (%d failure%s)\n", g_fail == 0 ? "OK" : "FAILED", g_fail, g_fail == 1 ? "" : "s");
     return g_fail == 0 ? 0 : 1;

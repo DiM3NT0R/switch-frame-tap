@@ -83,10 +83,10 @@ namespace ams::mitm::applet {
     constinit u32  g_nvstream_qp   = 20;
     constinit u32  g_nvstream_gop  = 0;
     constinit bool g_live_armed    = false;
-    /* detach_on_home=1 / arm "dethome": release the debug attach when the game
-     * stops presenting so HOME / Album is not fighting an active capture
-     * session. Off by default (stock keeps showing the suspended game). */
-    constinit bool g_detach_on_home = false;
+    /* Default on: release the debug attach when the game stops presenting so
+     * HOME / Album is not fighting an active capture session. Set
+     * detach_on_home=0 (arm "nodethome") to keep showing the suspended game. */
+    constinit bool g_detach_on_home = true;
     constinit bool g_nv1080_armed  = false;
     constinit bool g_cap720_armed  = false;
     constinit bool g_anyfw_armed   = false;

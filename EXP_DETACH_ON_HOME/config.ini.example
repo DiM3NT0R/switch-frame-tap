@@ -1,2 +1,3 @@
-# Merge into sdmc:/config/switch-frame-tap/config.ini
-detach_on_home = 1
+# Default is detach-on-home ON (no config needed).
+# Only set this if you want the old keep-alive through HOME:
+# detach_on_home = 0
