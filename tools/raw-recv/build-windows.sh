@@ -26,7 +26,7 @@ mkdir -p "$B"
 
 # the icon (from the same SVG as the Linux launcher) and the version resource
 convert -background none -density 384 "$REPO/tools/raw-recv/switch-frame-tap.svg" -define icon:auto-resize=256,64,48,32,16 "$B/switch-frame-tap.ico"
-IFS=. read -r V1 V2 V3 <<< "$VER"
+IFS=. read -r V1 V2 V3 <<< "${VER%%-*}"   # numbers only: 0.7.11-test1 -> 0,7,11
 cat > "$B/raw-view.rc" <<RC
 1 ICON "switch-frame-tap.ico"
 1 VERSIONINFO
