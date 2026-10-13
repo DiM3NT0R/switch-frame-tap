@@ -1,12 +1,78 @@
-# switch-frame-tap
+# Switch Frame Tap
 
-A Nintendo Switch sysmodule that streams the game you are playing - picture
-and sound - to a Windows or Linux PC over a USB cable, or over the network so
-you can play docked, with no capture card, compressed with the console's own
-hardware H.264 encoder. With a manager app,
-an overlay, native-resolution screenshots, **recording to MP4** from the
-viewer, and a **webcam mode** that makes the Switch a plain USB camera - for OBS, or for any camera app. Homebrew, built on and for the
-author's own console. **[Download the latest release](https://github.com/TomasUribe/switch-frame-tap/releases/latest)**.
+[![Latest release](https://img.shields.io/github/v/release/TomasUribe/switch-frame-tap)](https://github.com/TomasUribe/switch-frame-tap/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/TomasUribe/switch-frame-tap/total)](https://github.com/TomasUribe/switch-frame-tap/releases)
+[![Buy Me a Coffee](https://img.shields.io/badge/support-buy%20me%20a%20coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://www.buymeacoffee.com/papux200)
+
+**Stream your Nintendo Switch games to your PC, with sound, at up to 1080p
+60 fps, over a USB cable or your network. No capture card needed.**
+
+Switch Frame Tap is a sysmodule (a small background program) for Switch
+consoles running Atmosphère custom firmware. Install it on the SD card, open
+the viewer on your PC, start a game.
+
+<p align="center">
+  <img src="docs/shot-mk8-race-1080p.jpg" width="70%" alt="Mario Kart 8 Deluxe streamed at 1920x1080">
+</p>
+
+## Features
+
+- **Up to 1920x1080 at 60 fps**, the game's own resolution, encoded by the
+  console's hardware H.264 encoder.
+- **USB or network**: a USB-C cable in handheld mode, Wi-Fi or LAN when docked.
+- **Game sound** included.
+- **Low latency**: about 45 ms (720p) to 60 ms (1080p) from the game to your PC.
+- **Viewers for Windows and Linux**, plus macOS in the v0.7.11 test builds.
+- **Record to MP4** with one key, and take **native-resolution screenshots**.
+- **Webcam mode**: the Switch shows up as a USB camera in OBS, Discord, Zoom
+  or any camera app.
+- **Optional GPU upscaling** in the viewer (AMD FSR 1, NVIDIA NIS, RTX Video
+  Super Resolution on Windows), in the v0.7.11 test builds.
+- **A manager app and an overlay** on the Switch for settings, so you never
+  have to edit files.
+
+## What you need
+
+- A Switch running [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere/releases)
+  (tested on firmware 22.5.0 with Atmosphère 1.11.2)
+- A PC with Windows 10/11 or Linux (or macOS with the test builds)
+- A USB-C cable, or the Switch and the PC on the same network
+
+## Quick start
+
+1. Download the `-switch.zip` from the
+   **[latest release](https://github.com/TomasUribe/switch-frame-tap/releases/latest)**
+   (or get it from the Homebrew App Store), unzip it onto the root of the SD
+   card and reboot.
+2. Download the viewer for your PC from the same release:
+   - **Windows:** unzip it and install the USB driver once with
+     [Zadig](https://zadig.akeo.ie/) ([how](#install)), then open `SwitchFrameTap.exe`.
+   - **Linux:** unpack it and run the install script ([how](#install)).
+3. Plug the Switch into the PC (handheld) or pick **Network** in the viewer
+   (press **Tab**), then start a game.
+
+The full guide, with every option, is in [Install](#install).
+
+## Good to know
+
+- **USB only works in handheld mode**, because the dock uses the USB port.
+  When docked, stream over the network.
+- **1080p over USB** needs [ReverseNX-RT](https://github.com/masagrator/ReverseNX-RT)
+  to make the game render its docked picture in handheld; docked over the
+  network it is 1080p by itself.
+- **It is experimental homebrew**, tested on a few consoles and games. Read
+  [Limitations](#limitations) before installing it.
+
+## Support
+
+If you like the project and want to support it, you can
+[buy me a coffee](https://www.buymeacoffee.com/papux200). Thank you!
+
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/papux200)
+
+---
+
+## In detail
 
 **The goal of this project is 1080p at 60 fps**: the game's native docked
 resolution, at full frame rate, on any PC.
