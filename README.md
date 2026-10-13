@@ -190,12 +190,24 @@ default audio device.
 | **Tab** | the connection: USB / Network (v0.7.0; remembered) |
 | **I** | type the Switch's IP address (Network, if it is not found by itself) |
 | **O** or **F3** | the stats overlay: off / FPS / graphs / full (v0.7.2; remembered) |
+| **V** | vsync on / off - off is lower latency but may tear (v0.7.11; remembered) |
+| **U** | GPU upscaling: off / AMD FSR 1 / NVIDIA NIS, plus NVIDIA RTX Video Super Resolution on Windows (v0.7.11; remembered, off by default) |
 
 It reads USB, decodes and draws on separate threads and shows the frames in
 order, one per screen refresh (vsync), so the picture stays smooth. Its
 statistics - frame rate, latencies, decode and draw times, once a second - go
 to the terminal on Linux and to `%APPDATA%\switch-frame-tap\viewer\viewer.log`
 on Windows.
+
+**GPU upscaling** (v0.7.11, off by default): when the window or fullscreen is
+bigger than the stream (say 1080p shown on a 1440p or 4K monitor), **U**
+sharpens the enlargement on your graphics card instead of a plain stretch.
+**FSR 1** (AMD FidelityFX Super Resolution) works on any GPU with OpenGL 4.3;
+**NIS** (NVIDIA Image Scaling) too, despite the name; on Windows, **RTX VSR**
+uses an RTX card's own AI upscaler (turn on *RTX Video Enhancement - Super
+resolution* in the NVIDIA app or Control Panel). On Windows, switching between
+RTX VSR and FSR/NIS takes a restart of the viewer (they draw with Direct3D and
+OpenGL). Recordings and screenshots keep the console's own picture.
 
 **The stats overlay** (v0.7.2): **O** or **F3** steps through four levels -
 off; **FPS**, a counter in the corner (yellow or red when frames come

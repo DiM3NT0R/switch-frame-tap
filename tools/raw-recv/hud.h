@@ -14,7 +14,7 @@ enum { HUD_OFF = 0, HUD_FPS, HUD_GRAPHS, HUD_FULL, HUD_MODES };
 static const char *const hud_mode_name[HUD_MODES] = { "off", "FPS", "graphs", "full" };
 static int g_hud = HUD_OFF;
 static Uint64 g_hud_toast = 0;          /* when the "Stats overlay: ..." note was set */
-static char g_hud_toast_text[96] = "";  /* v0.7.11: another note instead (vsync, decoder) */
+static char g_hud_toast_text[112] = "";  /* v0.7.11: another note instead (vsync, decoder) */
 static int g_vsync = 1;                  /* v0.7.11: V - wait for the display's refresh */
 static const char *g_dec_mode = "";      /* v0.7.11: "1 thread" / "2 threads (slow PC)" */
 
@@ -234,7 +234,7 @@ static void hud_draw(SDL_Renderer *ren, int W, int H, const char *conn, const ch
     } else if (g_hud == HUD_FULL) {
         /* numbers on the left, graphs on the right */
         const int lx = 10, ly = 10, lw = 340;
-        fill(ren, lx, ly, lw, 470, hud_panel);
+        fill(ren, lx, ly, lw, 492, hud_panel);
         int y = ly + 10;
         #define HUD_ROW(name, ...) do { text_draw(ren, name, lx + 12, y, 16, 0, hud_dim, 0); \
             snprintf(t, sizeof(t), __VA_ARGS__); text_draw(ren, t, lx + lw - 12, y, 16, 1, hud_ink, 2); y += 22; } while (0)
@@ -251,6 +251,7 @@ static void hud_draw(SDL_Renderer *ren, int W, int H, const char *conn, const ch
         HUD_ROW("Decode", "%.2f ms (max %.1f)", g_hs.dec_ms, g_hs.dec_max);
         HUD_ROW("  decoder", "%s", g_dec_mode);
         HUD_ROW(g_vsync ? "Draw + vsync" : "Draw (vsync off)", "%.1f ms", g_hs.draw_ms);
+        { char ut[64]; up_hud_text(ut, sizeof(ut)); HUD_ROW("Upscaling", "%s", ut); }
         HUD_ROW("Worst frame gap", "%.1f ms", g_hs.gap_max);
         HUD_ROW("Frames skipped", "%ld (this second)", g_hs.skipped);
         HUD_ROW("Packets lost", "%ld", g_hs.lost);

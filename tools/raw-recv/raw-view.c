@@ -28,6 +28,8 @@
  *   ./raw-view --file s.sft --paced --seconds 4 --stats full --shot hud.bmp
  *                              # v0.7.2: the stats overlay at a level (off/fps/graphs/full;
  *                              # O or F3 cycles it), and the last frame saved as BMP (tests)
+ *   ./raw-view --file s.sft --paced --upscaler fsr   # v0.7.11: GPU upscaling (off/fsr/nis;
+ *                              # U cycles it, remembered in viewer.ini)
  *   ./raw-view --net 192.168.1.23   # v0.7: the stream over the network (the console
  *                              # with network streaming on); --app finds it by itself
  *   R records to MP4 (v0.5) in Videos/Switch Frame Tap: the console's H.264 as it
@@ -104,6 +106,7 @@ static double g_run_secs = 0;       /* --seconds: stop the live pipeline after t
 static const char *g_shot = NULL;    /* --shot: save the last frame drawn (overlay included) as BMP (tests) */
 static const char *g_mp4 = NULL;     /* --mp4 FILE: record into FILE from the start (tests) */
 static const char *g_rec_dir = NULL; /* --rec-dir DIR: where R saves (default Videos/Switch Frame Tap) */
+static int g_win_w = 0, g_win_h = 0;  /* --window WxH: keep the window this size (tests) */
 
 /* ---- v0.3: game audio ------------------------------------------------------
  * The console sends the sound since the last frame as its own packet before
@@ -143,6 +146,7 @@ static const char *net_peer_for_menu(void);
 static int conn_for_menu(void);
 static const char *net_status_for_menu(void);
 static const char *ip_edit_for_menu(void);   /* NULL unless an address is being typed */
+#include "upscale.h"           /* v0.7.11: GPU upscaling, FSR 1 / NIS (U) */
 #include "menu.h"              /* v0.5: the main screen while there is no picture */
 #include "hud.h"               /* v0.7.2: the stats overlay (O / F3) */
 static libusb_device_handle *g_usb = NULL;
@@ -275,6 +279,7 @@ static void prefs_load(void)
         int hm;
         if (sscanf(line, "stats_overlay=%d", &hm) == 1 && hm >= 0 && hm < HUD_MODES) g_hud = hm;
         if (sscanf(line, "vsync=%d", &hm) == 1) g_vsync = hm != 0;
+        if (sscanf(line, "upscaler=%127s", v) == 1) up_set_by_key(v);
     }
     fclose(f);
 }
@@ -285,7 +290,7 @@ static void prefs_save(void)
     prefs_path(path, sizeof(path));
     FILE *f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "connection=%s\nlast_ip=%s\nstats_overlay=%d\nvsync=%d\n", g_conn == CONN_NET ? "network" : "usb", g_last_ip, g_hud, g_vsync);
+    fprintf(f, "connection=%s\nlast_ip=%s\nstats_overlay=%d\nvsync=%d\nupscaler=%s\n", g_conn == CONN_NET ? "network" : "usb", g_last_ip, g_hud, g_vsync, up_key[g_upscaler]);
     fclose(f);
 }
 
@@ -788,6 +793,15 @@ static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
             hud_toast(g_vsync ? "Vsync on  (V)" : "Vsync off: lower latency, may tear  (V)");
             fprintf(stderr, "\nvsync %s\n", g_vsync ? "on" : "off");
             if (g_menu) menu_draw(ren);
+        } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_u && !e.key.repeat) {
+            /* v0.7.11: GPU upscaling - off / FSR 1 / NIS */
+            char t[112];
+            g_upscaler = (g_upscaler + 1) % UP_COUNT;
+            prefs_save();
+            up_describe(ren, t, sizeof(t));
+            hud_toast(t);
+            fprintf(stderr, "\nupscaler: %s\n", t);
+            if (g_menu) menu_draw(ren);
         } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_m) {
             g_mute = !g_mute;
             if (g_adev) { SDL_ClearQueuedAudio(g_adev); SDL_PauseAudioDevice(g_adev, 1); g_a_paused = 1; }
@@ -1103,14 +1117,16 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
             if (!tex || (uint32_t)show->width != W || (uint32_t)show->height != H) {
                 if (tex) SDL_DestroyTexture(tex);
                 W = (uint32_t)show->width; H = (uint32_t)show->height;
-                if (!(SDL_GetWindowFlags(win) & (SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_MAXIMIZED))) SDL_SetWindowSize(win, (int)W, (int)H);
+                if (g_win_w > 0) SDL_SetWindowSize(win, g_win_w, g_win_h);
+                else if (!(SDL_GetWindowFlags(win) & (SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_MAXIMIZED))) SDL_SetWindowSize(win, (int)W, (int)H);
                 tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, (int)W, (int)H);
                 SDL_RenderSetLogicalSize(ren, (int)W, (int)H);
                 fprintf(stderr, "\nstream: %ux%u H.264\n", W, H);
             }
             SDL_UpdateYUVTexture(tex, NULL, show->data[0], show->linesize[0], show->data[1], show->linesize[1], show->data[2], show->linesize[2]);
             SDL_RenderClear(ren);
-            SDL_RenderCopy(ren, tex, NULL, NULL);
+            if (!up_draw(ren, show->data, show->linesize, (int)W, (int)H, g_upscaler))   /* v0.7.11: U */
+                SDL_RenderCopy(ren, tex, NULL, NULL);
             if (rec_active()) {                /* v0.5: a red dot while recording (not in the file) */
                 const int d = (int)(H / 40 > 12 ? H / 40 : 12);
                 SDL_SetRenderDrawColor(ren, 230, 40, 40, 255);
@@ -1244,6 +1260,8 @@ int main(int argc, char **argv)
             const char *m = argv[++i];
             for (int k = 0; k < HUD_MODES; k++) if (!strcmp(m, hud_mode_name[k]) || (k == HUD_FPS && !strcmp(m, "fps"))) g_hud = k;
         }
+        else if (!strcmp(argv[i], "--upscaler") && i + 1 < argc) up_set_by_key(argv[++i]);
+        else if (!strcmp(argv[i], "--window") && i + 1 < argc) sscanf(argv[++i], "%dx%d", &g_win_w, &g_win_h);
         else if (!strcmp(argv[i], "--mp4") && i + 1 < argc) g_mp4 = argv[++i];
         else if (!strcmp(argv[i], "--rec-dir") && i + 1 < argc) g_rec_dir = argv[++i];
         else if (!strcmp(argv[i], "--net") && i + 1 < argc) net_host = argv[++i];
@@ -1286,6 +1304,8 @@ int main(int argc, char **argv)
         }
         SDL_SetYUVConversionMode(SDL_YUV_CONVERSION_BT709);
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
+        prefs_load();                      /* v0.7: USB or network, the last address; v0.7.11: before the renderer */
+        up_pick_renderer();
         win = SDL_CreateWindow("Switch Frame Tap", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
         ren = win ? SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC) : NULL;
@@ -1295,7 +1315,6 @@ int main(int argc, char **argv)
             return 1;
         }
         rec_init(g_rec_dir, g_mp4);
-        prefs_load();                      /* v0.7: USB or network, the last address */
         net_init();
         menu_draw(ren);
         if (!app_wait_device(ctx, win, ren, NULL)) { SDL_Quit(); libusb_exit(ctx); return 0; }

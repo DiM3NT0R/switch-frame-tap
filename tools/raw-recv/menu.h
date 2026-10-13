@@ -195,9 +195,16 @@ static void menu_draw(SDL_Renderer *ren)
         { "I", "Type the Switch's IP address (Network)" },
         { "O", "Stats overlay: off / FPS / graphs / full (or F3)" },
         { "V", "Vsync on / off (off: lower latency, may tear)" },
+#ifdef _WIN32
+        { "U", "GPU upscaling: off / FSR 1 / NIS / RTX VSR" },
+#elif defined(__APPLE__)
+        { "U", "GPU upscaling (Windows and Linux for now)" },
+#else
+        { "U", "GPU upscaling: off / AMD FSR 1 / NVIDIA NIS" },
+#endif
     };
-    for (int i = 0; i < 8; i++) {
-        const int y = py0 + 46 + i * 35;
+    for (int i = 0; i < 9; i++) {
+        const int y = py0 + 46 + i * 31;
         key_cap(ren, rows[i].k, px0 + 30, y);
         text_draw(ren, rows[i].what, px0 + 140, y + 5, 24, 0, (i == 5 && !conn_for_menu()) ? dim : ink, 0);
     }
@@ -207,7 +214,8 @@ static void menu_draw(SDL_Renderer *ren)
         rec_status(rs, sizeof(rs));
         const char *r = rs[0] ? rs + 5 : "";             /* rec_status starts with "  |  " */
         if (rec_active()) text_draw(ren, r, px0 + pw - 30, py0 + 51, 22, 1, red, 2);
-        if (g_mute) text_draw(ren, "muted", px0 + pw - 30, py0 + 86, 22, 1, warn, 2);
+        if (g_mute) text_draw(ren, "muted", px0 + pw - 30, py0 + 82, 22, 1, warn, 2);
+        if (g_upscaler != UP_OFF) text_draw(ren, up_name[g_upscaler], px0 + pw - 30, py0 + 46 + 8 * 31 + 5, 22, 1, warn, 2);
         if (!rec_active() && r[0]) text_draw(ren, r, 640, 690, 18, 0, dim, 1);
     }
 

@@ -113,6 +113,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 mkdir -p "$OUT/licenses"
 cp "$REPO/LICENSE" "$OUT/licenses/switch-frame-tap-GPL-2.0.txt"
+cp "$REPO/third_party/fsr1/license.txt" "$OUT/licenses/AMD-FidelityFX-FSR1-MIT.txt"; cp "$REPO/third_party/nis/licence.txt" "$OUT/licenses/NVIDIA-Image-Scaling-MIT.txt"   # v0.7.11: the upscalers' shaders
 cp "$FF/COPYING.LGPLv2.1" "$OUT/licenses/FFmpeg-LGPL-2.1.txt"
 cp "$SDLP/LICENSE.txt" "$OUT/licenses/SDL2-zlib.txt"
 cp "$USBP/COPYING" "$OUT/licenses/libusb-LGPL-2.1.txt" 2>/dev/null || true
