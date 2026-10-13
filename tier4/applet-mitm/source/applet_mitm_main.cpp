@@ -378,6 +378,8 @@ namespace ams {
             mitm::applet::g_shot_combo.store(mitm::applet::armfile::Number(g_arm_buf, g_arm_len, "shotkey", 0) & 3);
             mitm::applet::g_audio_enabled.store(mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "audio"));
             mitm::applet::g_nvab_armed = mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "nvab");
+            /* on unless config sets detach_on_home=0 (nodethome) */
+            mitm::applet::g_detach_on_home = !mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "nodethome");
         }
 
         /* Numeric option out of the arm file: "wait=180" delays the probe so
@@ -843,6 +845,7 @@ namespace ams {
         mitm::applet::g_nvstream_gop  = ArmFileNumber("nvgop", 0);
         mitm::applet::g_nvab_armed    = ArmFileContains("nvab");
         mitm::applet::g_live_armed    = ArmFileContains("live");
+        mitm::applet::g_detach_on_home = !ArmFileContains("nodethome");
         mitm::applet::g_nv1080_armed  = ArmFileContains("nv1080");
         mitm::applet::g_nv1080_n      = ArmFileNumber("nv1080", 120);
         mitm::applet::g_cap720_armed  = ArmFileContains("cap720");
@@ -888,6 +891,8 @@ namespace ams {
                               mitm::applet::g_live_armed,
                               mitm::applet::g_nv1080_armed, mitm::applet::g_nv1080_n,
                               mitm::applet::g_probe_delay_s);
+        mitm::applet::LogLine("detach-on-home=%s (exp: end session when presents stall ~1s; config detach_on_home=0 to keep)",
+                              mitm::applet::g_detach_on_home ? "on" : "off");
         if ((mitm::applet::g_jpgdec_armed || mitm::applet::g_nvgrc_armed ||
              mitm::applet::g_csc_armed || mitm::applet::g_nvframe_armed || mitm::applet::g_nvstream_armed ||
              mitm::applet::g_nvp_armed) && !mitm::applet::g_vic_armed) {
