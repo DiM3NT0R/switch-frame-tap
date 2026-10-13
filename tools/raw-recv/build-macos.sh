@@ -20,6 +20,9 @@ VER="${1:?usage: build-macos.sh VERSION}"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 HERE="$REPO/tools/raw-recv"
 ARCH=$(uname -m)
+# the oldest macOS it runs on (clang, FFmpeg's configure and SDL's CMake all
+# read this) - left unset it is the build machine's own, 14 or 15
+export MACOSX_DEPLOYMENT_TARGET=12.0
 M="$REPO/ref/macos-$ARCH"
 mkdir -p "$M" "$REPO/dist"
 
@@ -53,7 +56,7 @@ if [ ! -f "$SDLP/lib/libSDL2.a" ]; then
     [ -f "$REPO/ref/SDL2-$SDLV.tar.gz" ] || curl -sSfL -o "$REPO/ref/SDL2-$SDLV.tar.gz" "https://github.com/libsdl-org/SDL/releases/download/release-$SDLV/SDL2-$SDLV.tar.gz"
     rm -rf "$M/SDL2-$SDLV"; tar -xzf "$REPO/ref/SDL2-$SDLV.tar.gz" -C "$M"
     cmake -S "$M/SDL2-$SDLV" -B "$M/SDL2-$SDLV/build" -DCMAKE_BUILD_TYPE=Release \
-        -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST=OFF -DCMAKE_INSTALL_PREFIX="$SDLP" > "$M/sdl-cmake.log" 2>&1 || { tail -30 "$M/sdl-cmake.log"; exit 1; }
+        -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" -DCMAKE_INSTALL_PREFIX="$SDLP" > "$M/sdl-cmake.log" 2>&1 || { tail -30 "$M/sdl-cmake.log"; exit 1; }
     cmake --build "$M/SDL2-$SDLV/build" -j"$(sysctl -n hw.ncpu)" > "$M/sdl-build.log" 2>&1 || { tail -40 "$M/sdl-build.log"; exit 1; }
     cmake --install "$M/SDL2-$SDLV/build" > /dev/null
     cp "$M/SDL2-$SDLV/LICENSE.txt" "$SDLP/"

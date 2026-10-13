@@ -5,9 +5,12 @@ name: macOS viewer
 # version tag; the zips are the run's artifacts.
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version in the zip names (default: the branch or tag)'
+        required: false
   push:
     tags: ['v*']
-    branches: ['ci/macos']
 
 jobs:
   build:
@@ -24,7 +27,7 @@ jobs:
         run: brew install libusb pkg-config nasm cmake
       - name: Build
         run: |
-          v="${GITHUB_REF_NAME#v}"
+          v="${{ inputs.version }}"; [ -n "$v" ] || v="${GITHUB_REF_NAME#v}"
           bash tools/raw-recv/build-macos.sh "${v//\//-}"
       - uses: actions/upload-artifact@v4
         with:
