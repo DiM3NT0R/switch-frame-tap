@@ -86,6 +86,8 @@ namespace ams::mitm::applet::armfile {
      *                                                  boot; network leaves USB alone entirely)
      *                       | webcam-any             -> usb uvc uvcraw (v0.7.7: uncompressed NV12, any camera app)
      *   (usb_mode = webcam and network = 1, the v0.4-v0.7 test keys, still mean webcam / network)
+     *   detach_on_home    = 1                        -> dethome (end session when presents stall;
+     *                                                  frees donor memory for HOME / Album)
      *
      * Unknown keys and malformed values are ignored: a bad config file must
      * leave the defaults, never arm something else. */
@@ -132,7 +134,7 @@ namespace ams::mitm::applet::armfile {
     inline size_t BuildReleaseArm(const char *ini, size_t n, char *out, size_t cap) {
         unsigned qp = 20, gop = 60, wait = 20, u = 0;
         unsigned shotkey = 0;
-        bool cap720 = false, anyfw = false, shot = false, audio = true, uvc = false, uvcraw = false, nvab = false, net = false, nohb = false;
+        bool cap720 = false, anyfw = false, shot = false, audio = true, uvc = false, uvcraw = false, nvab = false, net = false, nohb = false, dethome = false;
         char v[32];
         if (IniValue(ini, n, "quality", v, sizeof(v))) {
             if (std::strcmp(v, "medium") == 0) { qp = 24; }
@@ -150,6 +152,7 @@ namespace ams::mitm::applet::armfile {
         if (IniValue(ini, n, "encoder_test", v, sizeof(v)) && std::strcmp(v, "1") == 0) { nvab = true; }
         if (IniValue(ini, n, "network", v, sizeof(v)) && std::strcmp(v, "1") == 0) { net = true; uvc = false; }
         if (IniValue(ini, n, "homebrew", v, sizeof(v)) && std::strcmp(v, "0") == 0) { nohb = true; }
+        if (IniValue(ini, n, "detach_on_home", v, sizeof(v)) && std::strcmp(v, "1") == 0) { dethome = true; }
         if (IniValue(ini, n, "connection", v, sizeof(v))) {
             if (std::strcmp(v, "network") == 0) { net = true; uvc = uvcraw = false; }
             else if (std::strcmp(v, "webcam") == 0) { uvc = true; uvcraw = false; net = false; }
@@ -159,9 +162,10 @@ namespace ams::mitm::applet::armfile {
         char shotbuf[24] = "";
         if (shot) { std::snprintf(shotbuf, sizeof(shotbuf), " shot shotkey=%u", shotkey); }
         /* one transport: "usb" (the viewer or, with uvc, the webcam) or "net" */
-        const int w = std::snprintf(out, cap, "vic exec dbg %s live nvqp=%u nvgop=%u wait=%u%s%s%s%s%s%s%s%s",
+        const int w = std::snprintf(out, cap, "vic exec dbg %s live nvqp=%u nvgop=%u wait=%u%s%s%s%s%s%s%s%s%s",
                                     net ? "net" : "usb", qp, gop, wait, cap720 ? " cap720" : "", anyfw ? " anyfw" : "", shotbuf, audio ? " audio" : "",
-                                    uvc ? " uvc" : "", uvcraw ? " uvcraw" : "", nvab ? " nvab" : "", nohb ? " nohb" : "");
+                                    uvc ? " uvc" : "", uvcraw ? " uvcraw" : "", nvab ? " nvab" : "", nohb ? " nohb" : "",
+                                    dethome ? " dethome" : "");
         return (w < 0 || static_cast<size_t>(w) >= cap) ? 0 : static_cast<size_t>(w);
     }
 

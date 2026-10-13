@@ -83,6 +83,10 @@ namespace ams::mitm::applet {
     constinit u32  g_nvstream_qp   = 20;
     constinit u32  g_nvstream_gop  = 0;
     constinit bool g_live_armed    = false;
+    /* detach_on_home=1 / arm "dethome": release the debug attach when the game
+     * stops presenting so HOME / Album is not fighting an active capture
+     * session. Off by default (stock keeps showing the suspended game). */
+    constinit bool g_detach_on_home = false;
     constinit bool g_nv1080_armed  = false;
     constinit bool g_cap720_armed  = false;
     constinit bool g_anyfw_armed   = false;
@@ -6305,6 +6309,18 @@ namespace ams::mitm::applet {
                 if (!g_stream_enabled.load(std::memory_order_relaxed)) { why = "turned off from the overlay"; end = StreamEnd::Disabled; break; }
                 if (g_reconfig_request.exchange(false, std::memory_order_relaxed)) { why = "new settings from the manager app"; end = StreamEnd::Reconfigure; break; }
                 if (g_app_excluded.load(std::memory_order_relaxed)) { why = "this app was excluded"; end = StreamEnd::Disabled; break; }
+                if (g_detach_on_home) {
+                    const u64 qt = g_queue_tick.load(std::memory_order_relaxed);
+                    if (qt != 0) {
+                        const u64 age_ns = armTicksToNs(armGetSystemTick() - qt);
+                        if (age_ns >= UINT64_C(1000000000)) {
+                            why = "HOME / game stopped presenting";
+                            PrepareForHomeMenu();
+                            end = StreamEnd::GameGone;
+                            break;
+                        }
+                    }
+                }
                 if (geo != nullptr && g_game_surface.generation != geo->generation) { why = "the game made new frame buffers"; end = StreamEnd::Reconfigure; break; }
                 if (g_uvc_new_consumer.exchange(false, std::memory_order_relaxed)) {
                     u32 nw = 0, nh = 0;
@@ -6714,6 +6730,24 @@ namespace ams::mitm::applet {
                 if (live && g_applet_needs_memory.load(std::memory_order_relaxed)) { why = "an applet (manual, news, eShop) needs the memory"; end = StreamEnd::Disabled; break; }
                 if (live && g_reconfig_request.exchange(false, std::memory_order_relaxed)) { why = "new settings from the manager app"; end = StreamEnd::Reconfigure; break; }
                 if (live && g_app_excluded.load(std::memory_order_relaxed)) { why = "this app was excluded"; end = StreamEnd::Disabled; break; }
+                /* exp/detach-on-home: game stopped presenting (HOME / SwitchU).
+                 * End the session so we are not holding a debug attach through
+                 * the Album/vi handoff; RunLive reattaches on the next present. */
+                if (live && g_detach_on_home) {
+                    const u64 qt = g_queue_tick.load(std::memory_order_relaxed);
+                    if (qt != 0) {
+                        const u64 age_ns = armTicksToNs(armGetSystemTick() - qt);
+                        if (age_ns >= UINT64_C(1000000000)) {
+                            why = "HOME / game stopped presenting";
+                            /* Free the 42 MB donor before SwitchU Album inits,
+                             * and hold re-setup so a connected viewer does not
+                             * remount it mid-handoff. */
+                            PrepareForHomeMenu();
+                            end = StreamEnd::GameGone;
+                            break;
+                        }
+                    }
+                }
                 /* v0.7.1: the game made new frame buffers (Minecraft loading a
                  * world): the ones we read are gone - start over on the new set */
                 if (live && geo != nullptr && g_game_surface.generation != geo->generation) { why = "the game made new frame buffers"; end = StreamEnd::Reconfigure; break; }

@@ -32,6 +32,10 @@ namespace ams::mitm::applet {
      * stop the stream and give the memory back first; no donor for a few
      * seconds after, so the applet gets its share. Blocks up to ~1.5 s. */
     void PrepareForApplet(u32 applet_id);
+    /* exp/detach-on-home: game stopped presenting (HOME / SwitchU). Force the
+     * stream to give the donor's memory back immediately and hold engine
+     * re-setup for a few seconds so Album is not racing a 42 MB remount. */
+    void PrepareForHomeMenu();
     bool AppletHoldActive();
 
     /* sftap commands 10 / 11, from the donor */

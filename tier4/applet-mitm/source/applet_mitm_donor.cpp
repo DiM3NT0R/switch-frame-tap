@@ -99,6 +99,17 @@ namespace ams::mitm::applet {
                 static_cast<unsigned long long>((armTicksToNs(armGetSystemTick()) - t0) / 1000000));
     }
 
+    void PrepareForHomeMenu() {
+        const u64 t0 = armTicksToNs(armGetSystemTick());
+        /* Keep engines from remounting the donor while SwitchU / Album inits.
+         * Viewer may still be connected; without this hold RunVicBlit sets up
+         * again immediately and the first Album launch OOMs. */
+        g_hold_until_ns.store(t0 + 5'000'000'000ull, std::memory_order_relaxed);
+        g_trigger_ns = t0;
+        g_applet_needs_memory.store(true, std::memory_order_relaxed);
+        LogLine("home: detach-on-home - release capture memory for home menu (no engine re-setup for 5 s)");
+    }
+
     void StartAppletWatch() {
         const s32 prio = os::GetThreadPriority(os::GetCurrentThread());
         if (R_FAILED(os::CreateThread(std::addressof(g_watch_thread), AppletWatchThread, nullptr, g_watch_stack, sizeof(g_watch_stack), prio))) {

@@ -1,0 +1,2 @@
+# Merge into sdmc:/config/switch-frame-tap/config.ini
+detach_on_home = 1
