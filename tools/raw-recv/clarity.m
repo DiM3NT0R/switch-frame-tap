@@ -11,6 +11,8 @@ static SDL_Renderer *owner;
 static int tex_width, tex_height, slot = -1, failed;
 static int active, active_cubic;
 static float active_strength;
+static int use_easu = 1;
+void clarity_set_easu(int enabled) { use_easu = enabled != 0; }
 
 int clarity_status(int *cubic, float *strength)
 {
@@ -48,7 +50,7 @@ static int setup(SDL_Renderer *ren)
         fprintf(stderr, "clarity: Metal unavailable: %s\n", error.localizedDescription.UTF8String ?: "no shader");
         return 0;
     }
-    fprintf(stderr, "clarity: Metal RCAS + Catmull-Rom, one render pass\n");
+    fprintf(stderr, "clarity: Metal EASU / Catmull-Rom + RCAS, fused spatial pass\n");
     return 1;
 }
 
@@ -90,12 +92,14 @@ int clarity_draw(SDL_Renderer *ren, const uint8_t *const planes[3],
     [encoder setViewport:(MTLViewport){(ow - vw) / 2, (oh - vh) / 2, vw, vh, 0, 1}];
     [encoder setScissorRect:(MTLScissorRect){0, 0, (NSUInteger)ow, (NSUInteger)oh}];
     [encoder setRenderPipelineState:pipeline];
-    struct { vector_float2 size; float strength; uint32_t cubic; } params = {
-        {(float)tex_width, (float)tex_height}, strength, scale > 1.001
+    struct { vector_float2 size; float strength; uint32_t cubic;
+             vector_float2 output_size; uint32_t easu; } params = {
+        {(float)tex_width, (float)tex_height}, strength, scale > 1.001,
+        {(float)vw, (float)vh}, use_easu
     };
     [encoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
     for (int j = 0; j < 3; j++) [encoder setFragmentTexture:textures[slot][j] atIndex:j];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    active = 1; active_cubic = params.cubic; active_strength = strength;
+    active = 1; active_cubic = params.cubic ? (use_easu ? 2 : 1) : 0; active_strength = strength;
     return 1;
 }}

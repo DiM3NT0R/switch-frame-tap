@@ -1,9 +1,9 @@
 # macOS clarity filter
 
-The macOS Metal renderer can reconstruct enlarged luma using Catmull-Rom
-and apply adaptive RCAS sharpening, with noise attenuation and overshoot
-limiting. Color conversion, reconstruction, and sharpening share one draw
-pass. This is an adaptation of RCAS, not the complete FSR 1 EASU pipeline.
+The macOS Metal renderer defaults to FSR 1 EASU reconstruction and adaptive
+RCAS sharpening, with noise attenuation and overshoot limiting. The previous
+Catmull-Rom luma reconstruction remains available with `--upscaler cubic`.
+Color conversion, reconstruction, and sharpening share one draw pass.
 It cannot recover missing game detail or change the console's render resolution.
 
 Retina drawables are enabled. Window sizing respects the display's usable
@@ -13,7 +13,7 @@ independent of this filter.
 ## Controls
 
 - F8: toggle filtering (settings are saved).
-- F9: cycle sharpening strength 25%, 45%, 70%.
+- F9: cycle sharpening strength 40%, 70%, 100%.
 - `--clarity on|off`: override the saved mode.
 - `--sharpness 0..1`: override the saved strength; default is 0.45.
 
@@ -22,7 +22,7 @@ retain the SDL path. MP4 recordings contain the incoming encoded video,
 not the filtered display. Existing SDL texture uploads are retained for
 instant fallback when toggling the effect.
 
-## Validation on 2026-10-13
+## Original Catmull-Rom Validation on 2026-10-13
 
 Build: `make -C tools/raw-recv raw-view`.
 Stream fixture: `tools/sft_stream_test.py` passed (40 decoded frames,
@@ -104,3 +104,28 @@ Temporal game upscalers require inputs such as motion vectors and depth
 that this H.264 stream does not expose. Spatial MetalFX would require a
 different command-buffer integration. The current single-pass route was
 chosen to keep the renderer change bounded and avoid extra frame queues.
+# FSR 1 EASU + RCAS
+
+The default macOS reconstruction is AMD FSR 1's 12-tap edge-adaptive
+spatial upsampling (EASU), followed by RCAS at output-pixel spacing.
+`--upscaler cubic` selects the previous Catmull-Rom implementation for A/B
+comparison; `--upscaler easu` selects the new default. At native size or
+downscaling, EASU is bypassed. The HUD reports the actual active kernel.
+
+Both stages are fused into one Metal fragment pass: RCAS's five input
+samples each evaluate EASU, rather than reading an intermediate texture.
+This avoids a new frame queue or CPU/GPU wait, at the cost of redundant
+sampling. No temporal history, motion estimation or frame generation is used.
+Sharpness retains the existing 0..1 strength control and noise attenuation.
+Source reference: https://github.com/GPUOpen-Effects/FidelityFX-FSR/blob/master/ffx-fsr/ffx_fsr1.h
+
+EASU validation: shader compiled on the host Metal device; HUD tests passed
+windowed/fullscreen, neutral flat-field preservation, old-mode selection,
+and waiting-menu clearing. USB mocks passed. Live gameplay was visually
+checked at a 2880x1800 drawable with the EASU label and no visible corruption.
+Short successive USB runs (not identical frozen input) gave median
+header-to-present / draw+vsync of 36.95 / 4.30 ms for cubic and
+36.50 / 4.20 ms for EASU, excluding startup seconds. These observations
+show no obvious regression, not a precise incremental GPU cost or physical
+input latency. Focus changes during GUI tests caused isolated stalls;
+occasional audio underruns remain unrelated to a proof of filter correctness.

@@ -58,13 +58,19 @@ static void check_picture(SDL_Window *win, SDL_Renderer *ren, int fullscreen)
         hud_sec hs = { .fps = 40, .w = 1920, .h = 1080 };
         hud_second(&hs);
         assert(strstr(video_filter_label(), "RCAS 45%"));
-        assert(strstr(video_filter_label(), fmin(w / 1920.0, h / 1080.0) > 1.001 ? "Catmull-Rom" : "Bilinear"));
+        assert(strstr(video_filter_label(), fmin(w / 1920.0, h / 1080.0) > 1.001 ? "FSR 1 EASU" : "Bilinear"));
         hud_draw(ren, 1920, 1080, "USB", "", video_filter_label());
         SDL_RenderFlush(ren);
         SDL_RenderSetLogicalSize(ren, 0, 0);
         SDL_Rect read_rect = {0, 0, w, h};
         SDL_FillRect(s, NULL, 0);
         assert(SDL_RenderReadPixels(ren, &read_rect, SDL_PIXELFORMAT_ARGB8888, s->pixels, s->pitch) == 0);
+        // Flat fields must remain neutral (including EASU's zero-gradient case).
+        Uint8 flat_r, flat_g, flat_b;
+        SDL_GetRGB(((Uint32 *)((char *)s->pixels + (h / 2) * s->pitch))[w * 9 / 10],
+                   s->format, &flat_r, &flat_g, &flat_b);
+        assert(flat_r >= 96 && flat_r <= 100);
+        assert(flat_g == flat_r && flat_b == flat_r);
         // Every overlay must be inside the top-left of the letterboxed image.
         const double scale = fmin(w / 1280.0, h / 720.0);
         const int x0 = (int)((w - 1280 * scale) / 2);
@@ -96,6 +102,11 @@ int main(void)
     assert(ren);
     check_picture(win, ren, 0);
     check_picture(win, ren, 1);
+    clarity_set_easu(0);
+    assert(clarity_draw(ren, NULL, NULL, 0, 0, .45f));
+    assert(strstr(video_filter_label(), "Catmull-Rom"));
+    SDL_RenderPresent(ren);
+    clarity_set_easu(1);
     capture_menu = 1;
     menu_draw(ren);
     capture_menu = 0;
@@ -112,6 +123,16 @@ int main(void)
     assert(SDL_PushEvent(&e) == 1);
     app_events(win, ren, NULL);
     assert(g_hud == HUD_FPS);
+    g_sharpness = .4f;
+    e.key.keysym.scancode = SDL_SCANCODE_F9;
+    e.key.keysym.sym = SDLK_F9;
+    const float strengths[] = {.7f, 1.0f, .4f};
+    for (int i = 0; i < 3; i++) {
+        assert(SDL_PushEvent(&e) == 1);
+        app_events(win, ren, NULL);
+        assert(g_sharpness == strengths[i] && g_clarity);
+    }
+    puts("F9 sharpness cycle 40/70/100 OK");
     clarity_close();
     SDL_DestroyRenderer(ren); SDL_DestroyWindow(win); SDL_Quit();
     puts("HUD regression OK");

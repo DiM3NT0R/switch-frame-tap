@@ -129,7 +129,7 @@ static const char *video_filter_label(void)
     float strength = 0;
     if (!g_clarity) return "Bilinear / enhancement off";
     if (!clarity_status(&cubic, &strength)) return "Bilinear / fallback";
-    snprintf(label, sizeof(label), "%s + RCAS %.0f%%", cubic ? "Catmull-Rom" : "Bilinear", strength * 100);
+    snprintf(label, sizeof(label), "%s + RCAS %.0f%%", cubic == 2 ? "FSR 1 EASU" : cubic ? "Catmull-Rom" : "Bilinear", strength * 100);
     return label;
 }
 
@@ -946,7 +946,7 @@ static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
             prefs_save();
             fprintf(stderr, "\nclarity: %s, sharpness %.0f%%\n", g_clarity ? "on" : "off", g_sharpness * 100);
         } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_F9 && !e.key.repeat) {
-            g_sharpness = g_sharpness < 0.4f ? 0.45f : g_sharpness < 0.6f ? 0.7f : 0.25f;
+            g_sharpness = g_sharpness < 0.4f ? 0.4f : g_sharpness < 0.7f ? 0.7f : g_sharpness < 1.0f ? 1.0f : 0.4f;
             g_clarity = 1;
             prefs_save();
             fprintf(stderr, "\nclarity: on, sharpness %.0f%%\n", g_sharpness * 100);
@@ -1399,6 +1399,13 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--headless")) headless = 1;
         else if (!strcmp(argv[i], "--low-latency")) low_latency = 1;
         else if (!strcmp(argv[i], "--software")) use_videotoolbox = 0;
+        else if (!strcmp(argv[i], "--upscaler") && i + 1 < argc) {
+            const char *mode = argv[++i];
+            if (strcmp(mode, "easu") && strcmp(mode, "cubic")) {
+                fprintf(stderr, "--upscaler expects easu or cubic\n"); return 2;
+            }
+            clarity_set_easu(!strcmp(mode, "easu"));
+        }
         else if (!strcmp(argv[i], "--clarity") && i + 1 < argc) {
             const char *mode = argv[++i];
             if (strcmp(mode, "on") && strcmp(mode, "off")) { fprintf(stderr, "--clarity expects on or off\n"); return 2; }
