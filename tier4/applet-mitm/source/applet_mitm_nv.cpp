@@ -48,6 +48,7 @@
 #include "applet_mitm_uvc.hpp"
 #include "applet_mitm_net.hpp"
 #include "applet_mitm_slotmatch.hpp"
+#include "applet_mitm_idlework.hpp"
 #include <atomic>
 #include <cstring>
 #include <cstdio>
@@ -5314,8 +5315,7 @@ namespace ams::mitm::applet {
              * the fence, polling nvhost-ctrl, at most 30 ms. */
             /* M95: something to do while the GPU finishes (collecting the
              * previous encode); called between polls until it returns true */
-            bool (*idle_fn)(void *) = nullptr;
-            void *idle_ctx = nullptr;
+            EncodeIdleWork idle_work;
             u64 last_flush_ns = 0;
 
             /* v0.7.1: was 30 ms. Pokemon Sword queues each frame ~20 ms
@@ -5342,7 +5342,7 @@ namespace ams::mitm::applet {
                         if (R_FAILED(NvIoctl(cfd, NvHostIocCtrlSyncptRead, std::addressof(r), sizeof(r), std::addressof(e))) || e != 0) { break; }
                         if (static_cast<s32>(r.value - want) >= 0) { break; }
                         if (armTicksToNs(armGetSystemTick()) - t0 > FenceTimeoutNs) { timed_out = true; break; }
-                        if (idle_fn != nullptr && idle_fn(idle_ctx)) { idle_fn = nullptr; continue; }
+                        if (idle_work.Poll()) { continue; }
                         os::SleepThread(TimeSpan::FromMicroSeconds(250));
                     }
                 }
@@ -5447,9 +5447,13 @@ namespace ams::mitm::applet {
             bool Capture(::ams::svc::Handle dbg, u64 slot_base, u64 *read_ns, u32 *sig, u32 *dropped = nullptr) {
                 this->HoldForMatch(dbg);
                 for (u32 spins = 0; g_queue_count.load(std::memory_order_acquire) == seen && spins < 50; ++spins) {
+                    idle_work.Poll();
                     os::SleepThread(TimeSpan::FromMilliSeconds(1));
                 }
                 for (u32 retry = 0; ; ) {
+                // Collect before selecting a slot: USB work may block, so never
+                // interrupt a framebuffer copy after its slot has been selected.
+                idle_work.Poll();
                 const u32 qnow = g_queue_count.load(std::memory_order_acquire);
                 if (qnow == seen) { break; }
                 {
@@ -6184,6 +6188,7 @@ namespace ams::mitm::applet {
              * about a frame of latency, so 720p (which fits 16.7 ms as it is)
              * keeps the sequential path. */
             const bool pipe = full1080;
+            if (pipe) { LogLine("   nvstream: early collection enabled (present idle + pre-capture + pre-VIC)"); }
             s.arena_size = pipe ? L.arena_size_pipe : (gop != 0 ? L.arena_size_p : L.arena_size);   /* same base: past both stream stages */
             LogLine("   nvstream: encoding %ux%u%s%s%s", L.w, L.h, uvc ? " for the webcam" : "",
                     full1080 ? " (1920x1088 coded, SPS-cropped)" : (s.corner ? " (the handheld picture, 1:1)" : " (the VIC scales the picture)"),
@@ -6444,9 +6449,11 @@ namespace ams::mitm::applet {
              * collect and send the previous one as soon as its encode is done
              * (Run U: fences avg 4.7 ms of otherwise idle waiting) */
             bool hook_stop = false;
+            u32 early_collects = 0, w_early0 = 0;
             auto hook = [&]() -> bool {
                 if (!fl.active || !NvfPollDone(s.x, fl.pic, fl.fence)) { return false; }
                 if (collect(fl)) { hook_stop = true; }
+                ++early_collects;
                 return true;
             };
             /* M97: the overlay's fps readout, refreshed about once a second */
@@ -6481,11 +6488,12 @@ namespace ams::mitm::applet {
                     o_t0 = t0; o_sent0 = sent; o_q0 = qn;
                 }
                 if (pipe && fl.active) {
-                    s.idle_fn = [](void *p) -> bool { return (*static_cast<decltype(hook) *>(p))(); };
-                    s.idle_ctx = std::addressof(hook);
+                    s.idle_work = { [](void *p) -> bool { return (*static_cast<decltype(hook) *>(p))(); }, std::addressof(hook) };
                 }
                 const bool got = s.Capture(dbg, slot_base, std::addressof(rn), std::addressof(sg), std::addressof(dropped));
-                s.idle_fn = nullptr;
+                // If NVENC finished during the copy, send before spending time in VIC.
+                if (got) { s.idle_work.Poll(); }
+                s.idle_work = {};
                 if (hook_stop) { break; }
                 if (!got) { why = SlotReadFailure(); end = StreamEnd::GameGone; break; }
                 const u64 present_ns = armTicksToNs(s.present_tick);
@@ -6599,15 +6607,16 @@ namespace ams::mitm::applet {
                         const u32 fw = s.fence_waits - w_fwait0;
                         const u64 wfps = wn > w_t0 ? static_cast<u64>(sent - w_sent0) * UINT64_C(10000000000) / (wn - w_t0) : 0;
                         LogLine("   nvstream window: %llu.%llu fps sent; per frame avg us: read %llu (flush %llu of it)  VIC %llu  NVENC wait %llu  GPU fence %llu; "
-                                "presents: %u already drawn, %u waited for, %u skipped",
+                                "presents: %u already drawn, %u waited for, %u skipped; early collects %u",
                                 static_cast<unsigned long long>(wfps / 10), static_cast<unsigned long long>(wfps % 10),
                                 static_cast<unsigned long long>(w_read / wd / 1000), static_cast<unsigned long long>(w_flush / wd / 1000),
                                 static_cast<unsigned long long>(w_vic / wd / 1000), static_cast<unsigned long long>(w_enc / wd / 1000),
                                 static_cast<unsigned long long>(fw ? (s.fence_wait_sum - w_fence0) / fw / 1000 : 0),
-                                s.pick_ready - w_ready0, s.pick_waited - w_waited0, dropped - w_drop0);
+                                s.pick_ready - w_ready0, s.pick_waited - w_waited0, dropped - w_drop0, early_collects - w_early0);
                         w_n = 0; w_read = w_flush = w_vic = w_enc = 0; w_t0 = wn; w_sent0 = sent;
                         w_fwait0 = s.fence_waits; w_fence0 = s.fence_wait_sum;
                         w_ready0 = s.pick_ready; w_waited0 = s.pick_waited; w_drop0 = dropped;
+                        w_early0 = early_collects;
                     }
                     u32 hz = 0;
                     if (!ClockRateOf(PcvModule_NVENC, std::addressof(hz)) || hz < 400000000u) {

@@ -6,9 +6,18 @@
 
 static id<MTLDevice> device;
 static id<MTLRenderPipelineState> pipeline;
+static id<MTLRenderPipelineState> rcas_pipeline;
+static id<MTLComputePipelineState> easu_pipeline;
+static id<MTLComputePipelineState> rgb_pipeline;
+static id<MTLCommandQueue> compute_queue;
 static id<MTLTexture> textures[4][3];
+static id<MTLTexture> upscaled[4];
+static id<MTLTexture> source_rgb;
 static SDL_Renderer *owner;
 static int tex_width, tex_height, slot = -1, failed;
+static int output_width, output_height, output_slot = -1, output_source = -1;
+static double compute_gpu_ms, compute_wait_ms;
+static unsigned compute_samples;
 static int active, active_cubic;
 static float active_strength;
 static int use_easu = 1;
@@ -24,8 +33,13 @@ int clarity_status(int *cubic, float *strength)
 void clarity_close(void)
 {
     for (int i = 0; i < 4; i++) for (int j = 0; j < 3; j++) textures[i][j] = nil;
+    for (int i = 0; i < 4; i++) upscaled[i] = nil;
+    rcas_pipeline = nil; easu_pipeline = nil; rgb_pipeline = nil; compute_queue = nil;
+    source_rgb = nil;
     pipeline = nil; device = nil; owner = NULL;
     tex_width = tex_height = 0; slot = -1; failed = 0;
+    output_width = output_height = 0; output_slot = output_source = -1;
+    compute_gpu_ms = compute_wait_ms = 0; compute_samples = 0;
     active = 0;
 }
 
@@ -50,7 +64,16 @@ static int setup(SDL_Renderer *ren)
         fprintf(stderr, "clarity: Metal unavailable: %s\n", error.localizedDescription.UTF8String ?: "no shader");
         return 0;
     }
-    fprintf(stderr, "clarity: Metal EASU / Catmull-Rom + RCAS, fused spatial pass\n");
+    desc.fragmentFunction = [library newFunctionWithName:@"clarity_rcas"];
+    rcas_pipeline = [device newRenderPipelineStateWithDescriptor:desc error:&error];
+    id<MTLFunction> easu = [library newFunctionWithName:@"clarity_easu"];
+    if (easu) easu_pipeline = [device newComputePipelineStateWithFunction:easu error:&error];
+    id<MTLFunction> rgb = [library newFunctionWithName:@"clarity_rgb"];
+    if (rgb) rgb_pipeline = [device newComputePipelineStateWithFunction:rgb error:&error];
+    compute_queue = [device newCommandQueue];
+    if (!rcas_pipeline || !easu_pipeline || !rgb_pipeline || !compute_queue)
+        fprintf(stderr, "clarity: EASU unavailable, using cubic: %s\n", error.localizedDescription.UTF8String ?: "no compute queue");
+    fprintf(stderr, "clarity: Metal EASU + RCAS, two passes; cubic fallback available\n");
     return 1;
 }
 
@@ -68,6 +91,7 @@ int clarity_draw(SDL_Renderer *ren, const uint8_t *const planes[3],
     id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)SDL_RenderGetMetalCommandEncoder(ren);
     if (!encoder) return 0;
     if (planes) {
+        output_source = -1;
         if (width != tex_width || height != tex_height) {
             for (int i = 0; i < 4; i++) for (int j = 0; j < 3; j++) {
                 MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
@@ -88,18 +112,86 @@ int clarity_draw(SDL_Renderer *ren, const uint8_t *const planes[3],
         }
     }
     double scale = fmin((double)ow / tex_width, (double)oh / tex_height);
-    double vw = tex_width * scale, vh = tex_height * scale;
-    [encoder setViewport:(MTLViewport){(ow - vw) / 2, (oh - vh) / 2, vw, vh, 0, 1}];
+    int vw = MAX(1, (int)lround(tex_width * scale)), vh = MAX(1, (int)lround(tex_height * scale));
+    [encoder setViewport:(MTLViewport){(ow - vw) / 2, (oh - vh) / 2, (double)vw, (double)vh, 0, 1}];
     [encoder setScissorRect:(MTLScissorRect){0, 0, (NSUInteger)ow, (NSUInteger)oh}];
-    [encoder setRenderPipelineState:pipeline];
     struct { vector_float2 size; float strength; uint32_t cubic;
              vector_float2 output_size; uint32_t easu; } params = {
         {(float)tex_width, (float)tex_height}, strength, scale > 1.001,
         {(float)vw, (float)vh}, use_easu
     };
+    int two_pass = use_easu && params.cubic && easu_pipeline && rgb_pipeline && rcas_pipeline && compute_queue;
+    if (two_pass) {
+        if (output_width != vw || output_height != vh) {
+            for (int i = 0; i < 4; i++) upscaled[i] = nil;
+            output_width = vw; output_height = vh;
+            output_slot = output_source = -1;
+        }
+        if (output_source != slot) {
+            output_slot = (output_slot + 1) % 4;
+            if (!upscaled[output_slot]) {
+                MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                    width:vw height:vh mipmapped:NO];
+                desc.storageMode = MTLStorageModePrivate;
+                desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+                upscaled[output_slot] = [device newTextureWithDescriptor:desc];
+            }
+            if (source_rgb.width != (NSUInteger)tex_width || source_rgb.height != (NSUInteger)tex_height) {
+                MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                    width:tex_width height:tex_height mipmapped:NO];
+                desc.storageMode = MTLStorageModePrivate;
+                desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+                source_rgb = [device newTextureWithDescriptor:desc];
+            }
+            id<MTLCommandBuffer> command = [compute_queue commandBuffer];
+            id<MTLComputeCommandEncoder> conversion = upscaled[output_slot] && source_rgb ? [command computeCommandEncoder] : nil;
+            if (conversion) {
+                [conversion setComputePipelineState:rgb_pipeline];
+                [conversion setBytes:&params length:sizeof(params) atIndex:0];
+                for (int j = 0; j < 3; j++) [conversion setTexture:textures[slot][j] atIndex:j];
+                [conversion setTexture:source_rgb atIndex:3];
+                NSUInteger tw = rgb_pipeline.threadExecutionWidth;
+                NSUInteger th = MIN((NSUInteger)8, rgb_pipeline.maxTotalThreadsPerThreadgroup / tw);
+                [conversion dispatchThreads:MTLSizeMake(tex_width,tex_height,1) threadsPerThreadgroup:MTLSizeMake(tw,th,1)];
+                // Tracked texture hazards order conversion before EASU in this buffer.
+                [conversion endEncoding];
+            }
+            id<MTLComputeCommandEncoder> compute = conversion ? [command computeCommandEncoder] : nil;
+            if (compute) {
+                [compute setComputePipelineState:easu_pipeline];
+                [compute setBytes:&params length:sizeof(params) atIndex:0];
+                [compute setTexture:source_rgb atIndex:0];
+                [compute setTexture:upscaled[output_slot] atIndex:1];
+                NSUInteger tw = easu_pipeline.threadExecutionWidth;
+                NSUInteger th = MIN((NSUInteger)8, easu_pipeline.maxTotalThreadsPerThreadgroup / tw);
+                [compute dispatchThreads:MTLSizeMake(vw, vh, 1) threadsPerThreadgroup:MTLSizeMake(tw, th, 1)];
+                [compute endEncoding];
+                Uint64 started = SDL_GetPerformanceCounter();
+                [command commit];
+                // SDL exposes its render encoder, not its command buffer. Complete
+                // the producer before SDL submits the consumer on a different queue.
+                // This waits for this frame only, never queues a future video frame.
+                [command waitUntilCompleted];
+                compute_wait_ms += (SDL_GetPerformanceCounter() - started) * 1000.0 / SDL_GetPerformanceFrequency();
+                compute_gpu_ms += (command.GPUEndTime - command.GPUStartTime) * 1000.0;
+                if (++compute_samples == 120) {
+                    fprintf(stderr, "clarity: RGB + EASU GPU %.2f ms, submit/wait %.2f ms (%dx%d, 120 frames)\n",
+                        compute_gpu_ms / compute_samples, compute_wait_ms / compute_samples, vw, vh);
+                    compute_gpu_ms = compute_wait_ms = 0; compute_samples = 0;
+                }
+            }
+            if (!compute || command.status != MTLCommandBufferStatusCompleted) {
+                fprintf(stderr, "clarity: EASU compute failed, using cubic: %s\n", command.error.localizedDescription.UTF8String ?: "allocation failed");
+                easu_pipeline = nil;
+                two_pass = 0;
+            } else output_source = slot;
+        }
+    }
+    [encoder setRenderPipelineState:two_pass ? rcas_pipeline : pipeline];
     [encoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
-    for (int j = 0; j < 3; j++) [encoder setFragmentTexture:textures[slot][j] atIndex:j];
+    if (two_pass) [encoder setFragmentTexture:upscaled[output_slot] atIndex:0];
+    else for (int j = 0; j < 3; j++) [encoder setFragmentTexture:textures[slot][j] atIndex:j];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    active = 1; active_cubic = params.cubic ? (use_easu ? 2 : 1) : 0; active_strength = strength;
+    active = 1; active_cubic = params.cubic ? (two_pass ? 2 : 1) : 0; active_strength = strength;
     return 1;
 }}

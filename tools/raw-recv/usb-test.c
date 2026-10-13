@@ -60,6 +60,22 @@ int main(void)
     reset(); input_len = 32; transient_io = 2;
     assert(read_exact(data, 32, 100) == 32 && !g_lost);
 #ifdef SFT_H264
+    assert(!default_low_delay(0,0) && !default_low_delay(1,1));
+#ifdef __APPLE__
+    assert(default_low_delay(1,0));
+#endif
+    h264_t low = {0};
+    assert(h264_open(&low,1,2,0) == 0);
+    assert(low.c->thread_count == 1 && (low.c->flags & AV_CODEC_FLAG_LOW_DELAY));
+    assert(!(low.c->active_thread_type & FF_THREAD_FRAME));
+    h264_close(&low);
+    assert(h264_open(&low,0,2,0) == 0);
+    assert(low.c->thread_count == 2 && !(low.c->flags & AV_CODEC_FLAG_LOW_DELAY));
+    h264_close(&low);
+    assert(h264_open(&low,-1,2,0) == 0);
+    assert(low.c->thread_count == 2 && !(low.c->flags & AV_CODEC_FLAG_LOW_DELAY));
+    h264_close(&low);
+    puts("Low-delay decoder and explicit frame-thread override OK");
     h264_t decoder = { .hwfmt = AV_PIX_FMT_VIDEOTOOLBOX, .videotoolbox = 1 };
     AVCodecContext context = { .opaque = &decoder };
     const enum AVPixelFormat formats[] = {AV_PIX_FMT_YUV420P, AV_PIX_FMT_NONE};

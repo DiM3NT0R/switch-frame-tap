@@ -24,6 +24,8 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 echo "switch-frame-tap PC-side checks"
+run "idle encode polling: collect once when ready, cancel safely" \
+    bash -c "g++ -std=c++20 -O2 -Itier4/applet-mitm/source tier4/applet-mitm/test/idlework_test.cpp -o $tmp/idlework_test && $tmp/idlework_test"
 run "arm-file parser (whole tokens, numbers)" \
     bash -c "g++ -std=c++20 -Itier4/applet-mitm/source tier4/applet-mitm/test/armfile_test.cpp -o $tmp/armfile_test && $tmp/armfile_test"
 run "screenshot PNG: de-swizzle + stored-deflate writer, checked with zlib" \

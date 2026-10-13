@@ -20,7 +20,7 @@
  *   ./raw-view --file s.sft --headless --frames 10   # decode only (tests)
  *   ./raw-view --swap          # flip R and B for a raw stream if colours look wrong
  *   ./raw-view --low-latency   # one decode thread, frames out immediately
- *   ./raw-view --threads 2     # N frame threads: N-1 frames of decoder delay (default 2;
+ *   ./raw-view --threads 2     # N frame threads: N-1 frames of decoder delay (software default 2;
  *                              # 0 = one per core, which cost ~250 ms in M84 Run J)
  *   ./raw-view --file s.sft --paced --seconds 5   # v0.2: a recording through the LIVE
  *                              # pipeline (reader thread, decoder thread, vsync display)
@@ -43,6 +43,7 @@
  * thread, 10 ms/frame with frame threads). So the default uses FFmpeg's frame
  * threads - throughput, at the cost of a few frames of decoder latency.
  * --low-latency trades that back on a fast CPU, or with a higher nvqp.
+ * macOS hardware decoding defaults to low-delay; --threads N overrides it.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -776,8 +777,10 @@ static int h264_open(h264_t *d, int low_latency, int threads, int use_videotoolb
     } else {
         fprintf(stderr, "decoder: software (requested)\n");
     }
+    // Negative means the macOS default: low-delay only if hardware initialized.
+    if (low_latency < 0) low_latency = d->videotoolbox;
     if (low_latency) {
-        /* every packet is a whole IDR frame: output it the moment it decodes */
+        /* Our IDR/P stream has no B-frame reordering; avoid frame-thread delay. */
         d->c->flags |= AV_CODEC_FLAG_LOW_DELAY;
         d->c->thread_count = 1;
     } else {
@@ -786,7 +789,11 @@ static int h264_open(h264_t *d, int low_latency, int threads, int use_videotoolb
         d->c->thread_count = threads;        /* 0 = one per core */
         d->c->thread_type = FF_THREAD_FRAME;
     }
-    return avcodec_open2(d->c, codec, NULL);
+    int rc = avcodec_open2(d->c, codec, NULL);
+    if (rc >= 0) fprintf(stderr, "decoder: low-delay %s, threads %d, frame threading %s\n",
+        low_latency ? "on" : "off", d->c->thread_count,
+        d->c->active_thread_type & FF_THREAD_FRAME ? "on" : "off");
+    return rc;
 }
 
 /* one access unit in, at most one frame out (1 = frame in d->frm) */
@@ -1384,9 +1391,20 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
 }
 #endif
 
+static int default_low_delay(int hardware, int explicit_threads)
+{
+#ifdef __APPLE__
+    return hardware && !explicit_threads;
+#else
+    (void)hardware; (void)explicit_threads;
+    return 0;
+#endif
+}
+
 int main(int argc, char **argv)
 {
     int swap_rb = 0, scale = 1, headless = 0, low_latency = 0, threads = 2, use_videotoolbox = 1;
+    int explicit_threads = 0;
     long max_frames = 0;
     const char *file = NULL, *record = NULL, *h264_out = NULL, *net_host = NULL;
     for (int i = 1; i < argc; i++) {
@@ -1419,7 +1437,9 @@ int main(int argc, char **argv)
             }
             g_sharpness = sharp; g_sharpness_cli = 1;
         }
-        else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--threads") && i + 1 < argc) {
+            threads = atoi(argv[++i]); explicit_threads = 1;
+        }
         else if (!strcmp(argv[i], "--app")) g_app = 1;
         else if (!strcmp(argv[i], "--paced")) g_paced = 1;
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) g_run_secs = atof(argv[++i]);
@@ -1433,6 +1453,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--net") && i + 1 < argc) net_host = argv[++i];
         else { fprintf(stderr, "unknown option %s (see the comment at the top of raw-view.c)\n", argv[i]); return 2; }
     }
+    if (!low_latency && default_low_delay(use_videotoolbox,explicit_threads)) low_latency = -1;
     if (scale < 1) scale = 1;
     g_view_scale = scale;
 #ifdef _WIN32
