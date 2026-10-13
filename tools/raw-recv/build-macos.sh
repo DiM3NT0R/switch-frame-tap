@@ -68,7 +68,7 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 SDL_STATIC=$("$SDLP/bin/sdl2-config" --static-libs | sed -e 's/-lSDL2main//' -e 's/-lSDL2//' -e "s#-L[^ ]*##g")
 cd "$HERE"
 clang -O2 -Wall -DSFT_H264 -DSFT_MP4 \
-    -I"$FF/include" $("$SDLP/bin/sdl2-config" --cflags) -I"$USBP/include" \
+    -I"$FF/include" -I"$SDLP/include" $("$SDLP/bin/sdl2-config" --cflags) -I"$USBP/include" \
     -o "$OUT/switch-frame-tap-viewer" raw-view.c \
     "$FF/lib/libavformat.a" "$FF/lib/libavcodec.a" "$FF/lib/libavutil.a" \
     "$SDLP/lib/libSDL2.a" $SDL_STATIC \
