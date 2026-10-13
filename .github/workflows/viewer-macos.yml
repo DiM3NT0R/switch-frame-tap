@@ -1,0 +1,30 @@
+name: macOS viewer
+
+# Builds Switch Frame Tap.app for Apple Silicon and Intel Macs
+# (tools/raw-recv/build-macos.sh). Run by hand from the Actions tab, or on a
+# version tag; the zips are the run's artifacts.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+    branches: ['ci/macos']
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14   # Apple Silicon
+          - runner: macos-13   # Intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: brew install sdl2 libusb pkg-config nasm
+      - name: Build
+        run: bash tools/raw-recv/build-macos.sh "${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viewer-macos-${{ matrix.runner }}
+          path: dist/switch-frame-tap-*-macos-*.zip

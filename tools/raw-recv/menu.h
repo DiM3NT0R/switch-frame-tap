@@ -144,6 +144,9 @@ static void menu_draw(SDL_Renderer *ren)
 #ifdef _WIN32
         head = "The Switch is connected but has no USB driver";
         l1 = "Install WinUSB for it once with Zadig - see README-WINDOWS.txt.";
+#elif defined(__APPLE__)
+        head = "The Switch is connected but cannot be opened";
+        l1 = "Is another program using it (another viewer, OBS)? Close it, or unplug and plug the cable again.";
 #else
         head = "The Switch is connected but cannot be opened";
         l1 = "Install the udev rule (99-switch-frame-tap.rules) - see the README.";
