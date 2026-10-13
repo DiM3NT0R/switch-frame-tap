@@ -161,8 +161,13 @@ it is that one), choose **WinUSB** and **Install Driver**. Then double-click
 `SwitchFrameTap.exe` (keep the two DLLs next to it; the zip is 2 MB). Windows may warn about an
 unknown publisher: **More info -> Run anyway**.
 
-**2b. The PC viewer on Linux.** Install the build dependencies and the udev
-rule (lets the viewer open the Switch without sudo), then the desktop app:
+**2b. The PC viewer on Linux** (any distribution - Ubuntu, Fedora, Arch,
+Bazzite, SteamOS - x86_64). Unpack `switch-frame-tap-0.7.11-linux.tar.gz` and
+run `./install.sh`: it puts **Switch Frame Tap** in the applications menu and
+prints the one `sudo` command that installs the USB rule (lets the viewer open
+the Switch). It is a single program with FFmpeg, SDL 2 and libusb built in.
+
+To build it from source instead (Ubuntu/Debian):
 
 ```bash
 sudo apt install build-essential libusb-1.0-0-dev libsdl2-dev libavcodec-dev libavutil-dev libavformat-dev
@@ -171,11 +176,13 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 bash tools/raw-recv/install-launcher.sh
 ```
 
-That puts a double-clickable **Switch Frame Tap** on the desktop and in the
-applications menu. The release also has
-`switch-frame-tap-0.7.10-linux-viewer.tar.gz` with the same files.
+**2c. The PC viewer on macOS** (v0.7.11; Apple Silicon or Intel). Unzip
+`switch-frame-tap-0.7.11-macos-arm64.zip` (Apple Silicon) or `-x86_64.zip`
+(Intel) and drag **Switch Frame Tap.app** to Applications. It is not signed by
+Apple: the first time, right-click it and choose **Open**. No USB driver is
+needed. Thanks to proconsule54 and DiM3NT0R for the first macOS builds.
 
-On both, the viewer opens a window that says what it is waiting for (the
+On all of them, the viewer opens a window that says what it is waiting for (the
 Switch, its USB driver, or a game) and lists its keys; the same screen comes
 back whenever the game is closed or not on screen (the HOME menu) instead of
 a frozen frame. It reconnects on its own and closes only when you close it. It plays the game's sound on the

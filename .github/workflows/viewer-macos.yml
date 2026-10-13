@@ -16,10 +16,10 @@ jobs:
       matrix:
         include:
           - runner: macos-14   # Apple Silicon
-          - runner: macos-13   # Intel
+          - runner: macos-15-intel   # Intel
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Dependencies
         run: brew install libusb pkg-config nasm cmake
       - name: Build

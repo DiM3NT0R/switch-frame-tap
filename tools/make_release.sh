@@ -59,39 +59,11 @@ rm -rf "$STAGE"
 echo "== $ZIP"
 unzip -l "$ZIP"
 
-# the Linux viewer: its source, the udev rule and the desktop-app installer,
-# laid out as in the repo so the README's commands work from the unpacked folder
+# the Linux viewer (v0.7.11): one binary for any distribution, FFmpeg/SDL 2/
+# libusb built in, with install.sh (tools/raw-recv/build-linux-portable.sh)
 echo "== linux viewer"
-make -s -B -C "$REPO/tools/raw-recv" raw-view | grep -q "WITH H.264"
-LSTAGE="$OUT/stage-linux/switch-frame-tap-$VER-linux-viewer"
-rm -rf "$OUT/stage-linux"
-mkdir -p "$LSTAGE/tools/raw-recv"
-for f in raw-view.c record.h menu.h hud.h font_dejavu.h raw-view uvc-check.c mp4-check.c Makefile 99-switch-frame-tap.rules install-launcher.sh switch-frame-tap.svg README.md; do
-    cp "$REPO/tools/raw-recv/$f" "$LSTAGE/tools/raw-recv/"
-done
-cp "$REPO/LICENSE" "$LSTAGE/"
-cat > "$LSTAGE/README.txt" <<TXT
-Switch Frame Tap $VER - the Linux viewer
-
-  sudo apt install build-essential libusb-1.0-0-dev libsdl2-dev libavcodec-dev libavutil-dev libavformat-dev
-  sudo cp tools/raw-recv/99-switch-frame-tap.rules /etc/udev/rules.d/
-  sudo udevadm control --reload-rules && sudo udevadm trigger
-  bash tools/raw-recv/install-launcher.sh
-
-Then open "Switch Frame Tap" from the desktop or the applications menu.
-
-Webcam mode (USB mode = Webcam in the manager app, then restart the console):
-no viewer needed - OBS lists "Switch Frame Tap Camera". To check it:
-  make -C tools/raw-recv uvc-check && tools/raw-recv/uvc-check --seconds 10
-tools/raw-recv/raw-view is a prebuilt binary (x86_64, Ubuntu 22.04); the
-installer rebuilds it from raw-view.c for your system.
-https://github.com/TomasUribe/switch-frame-tap
-TXT
-TGZ="$OUT/switch-frame-tap-$VER-linux-viewer.tar.gz"
-tar -C "$OUT/stage-linux" -czf "$TGZ" "switch-frame-tap-$VER-linux-viewer"
-rm -rf "$OUT/stage-linux"
-echo "== $TGZ"
-tar -tzf "$TGZ"
+bash "$REPO/tools/raw-recv/build-linux-portable.sh" "$VER" | tail -1
+rm -rf "$OUT/build-linux-portable"
 
 # the Windows viewer, when its toolchain is in ref/win (tools/raw-recv/build-windows.sh)
 if [ -x "$REPO/ref/win/zig/zig" ]; then
