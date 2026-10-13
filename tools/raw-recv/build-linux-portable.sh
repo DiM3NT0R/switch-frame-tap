@@ -1,0 +1,137 @@
+#!/bin/bash
+# v0.7.11: the Linux viewer as one binary for any distribution (Fedora, Arch,
+# Bazzite, SteamOS...), not only Ubuntu/Debian with its -dev packages.
+#
+# Built in: FFmpeg 8.1 with only what the viewer uses (H.264 decoder, AAC
+# encoder, MP4 muxer - as build-ffmpeg-min.sh does for Windows), SDL 2 built
+# from source (it loads X11, Wayland, PulseAudio/PipeWire and ALSA from the
+# system at runtime, so the binary does not need the exact versions Ubuntu's
+# SDL2 was linked against) and libusb. Left to the system: glibc (2.35, this
+# Ubuntu 22.04 build host - Fedora 36+, Arch, SteamOS 3 and Bazzite have newer)
+# and libudev (every systemd distribution).
+#
+# Needs: ref/ffmpeg-8.1.tar.xz, ref/SDL2-2.32.10.tar.gz, nasm, the X11/Wayland/
+# PulseAudio/ALSA -dev headers, libusb-1.0-0-dev, libudev-dev.
+#
+#   bash tools/raw-recv/build-linux-portable.sh 0.7.11
+#     -> dist/switch-frame-tap-0.7.11-linux-portable.tar.gz
+set -euo pipefail
+VER="${1:?usage: build-linux-portable.sh VERSION}"
+REPO=$(cd "$(dirname "$0")/../.." && pwd)
+HERE="$REPO/tools/raw-recv"
+L="$REPO/ref/linux"
+SDLV=2.32.10
+mkdir -p "$L"
+
+# ---- FFmpeg, static, only the viewer's pieces
+FF="$L/ffmpeg-min"
+if [ ! -f "$FF/lib/libavcodec.a" ]; then
+    echo "== FFmpeg 8.1 (minimal, static)"
+    [ -d "$REPO/ref/ffmpeg-8.1" ] || tar -xJf "$REPO/ref/ffmpeg-8.1.tar.xz" -C "$REPO/ref"
+    B="$REPO/ref/ffmpeg-8.1/build-linux"
+    rm -rf "$B"; mkdir -p "$B"; cd "$B"
+    "$REPO/ref/ffmpeg-8.1/configure" \
+        --prefix="$FF" --enable-static --disable-shared --enable-pic \
+        --disable-everything --disable-autodetect --disable-programs --disable-doc \
+        --disable-network --disable-avdevice --disable-avfilter --disable-swscale --disable-swresample \
+        --enable-decoder=h264 --enable-parser=h264 \
+        --enable-encoder=aac \
+        --enable-muxer=mp4 --enable-protocol=file \
+        --enable-x86asm > configure.log 2>&1 || { tail -30 configure.log; exit 1; }
+    make -j"$(nproc)" > make.log 2>&1 || { tail -40 make.log; exit 1; }
+    make install > install.log 2>&1
+    cp "$REPO/ref/ffmpeg-8.1/COPYING.LGPLv2.1" "$FF/"
+fi
+
+# ---- SDL 2, static, backends loaded at runtime
+SDL="$L/sdl2"
+if [ ! -f "$SDL/lib/libSDL2.a" ]; then
+    echo "== SDL $SDLV (static, dynamic backends)"
+    [ -d "$L/SDL2-$SDLV" ] || tar -xzf "$REPO/ref/SDL2-$SDLV.tar.gz" -C "$L"
+    B="$L/SDL2-$SDLV/build-portable"
+    rm -rf "$B"; mkdir -p "$B"; cd "$B"
+    ../configure --prefix="$SDL" --enable-static --disable-shared --with-pic \
+        --enable-video-x11 --enable-x11-shared --enable-video-wayland --enable-wayland-shared \
+        --enable-pulseaudio --enable-pulseaudio-shared --enable-alsa --enable-alsa-shared \
+        --enable-libdecor --enable-libdecor-shared --enable-video-kmsdrm --enable-kmsdrm-shared \
+        --disable-video-vulkan --disable-esd --disable-arts --disable-nas --disable-sndio --disable-jack \
+        > configure.log 2>&1 || { tail -30 configure.log; exit 1; }
+    grep -E "^(  )?(Video drivers|Audio drivers|Input drivers)|SDL2 Configure Summary" -A2 configure.log | head -20 || true
+    make -j"$(nproc)" > make.log 2>&1 || { tail -40 make.log; exit 1; }
+    make install > install.log 2>&1
+    cp "$L/SDL2-$SDLV/LICENSE.txt" "$SDL/"
+fi
+
+# ---- the viewer
+echo "== raw-view (portable)"
+OUT="$REPO/dist/build-linux-portable"
+rm -rf "$OUT"; mkdir -p "$OUT"
+cd "$HERE"
+SDL_CFLAGS=$("$SDL/bin/sdl2-config" --cflags)
+SDL_LIBS=$("$SDL/bin/sdl2-config" --static-libs)
+gcc -O2 -Wall -Wextra -DSFT_H264 -DSFT_MP4 \
+    -I"$FF/include" $SDL_CFLAGS $(pkg-config --cflags libusb-1.0) \
+    -o "$OUT/switch-frame-tap-viewer" raw-view.c \
+    "$FF/lib/libavformat.a" "$FF/lib/libavcodec.a" "$FF/lib/libavutil.a" \
+    $SDL_LIBS \
+    /usr/lib/x86_64-linux-gnu/libusb-1.0.a -ludev -lpthread -lm -ldl
+strip "$OUT/switch-frame-tap-viewer"
+echo "   needs from the system: $(readelf -d "$OUT/switch-frame-tap-viewer" | awk '/NEEDED/{gsub(/[\[\]]/,"",$5); printf "%s ", $5}')"
+echo "   glibc: up to $(objdump -T "$OUT/switch-frame-tap-viewer" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)"
+
+# ---- the package
+P="$OUT/switch-frame-tap-$VER-linux"
+mkdir -p "$P/licenses"
+cp "$OUT/switch-frame-tap-viewer" "$HERE/99-switch-frame-tap.rules" "$HERE/switch-frame-tap.svg" "$P/"
+cp "$REPO/LICENSE" "$P/licenses/switch-frame-tap-GPL-2.0.txt"
+cp "$FF/COPYING.LGPLv2.1" "$P/licenses/FFmpeg-LGPL-2.1.txt"
+cp "$SDL/LICENSE.txt" "$P/licenses/SDL2-zlib.txt"
+cp /usr/share/doc/libusb-1.0-0/copyright "$P/licenses/libusb-LGPL-2.1.txt" 2>/dev/null || true
+cat > "$P/install.sh" <<'SH'
+#!/bin/sh
+# Switch Frame Tap viewer: install for this user (no root needed), then the
+# USB rule once (root) so the viewer may open the Switch.
+set -e
+D=$(cd "$(dirname "$0")" && pwd)
+BIN="$HOME/.local/bin/switch-frame-tap-viewer"
+ICON="$HOME/.local/share/icons/hicolor/scalable/apps/switch-frame-tap.svg"
+APPS="$HOME/.local/share/applications/switch-frame-tap.desktop"
+mkdir -p "$(dirname "$BIN")" "$(dirname "$ICON")" "$(dirname "$APPS")"
+install -m 755 "$D/switch-frame-tap-viewer" "$BIN"
+install -m 644 "$D/switch-frame-tap.svg" "$ICON"
+cat > "$APPS" <<DESK
+[Desktop Entry]
+Type=Application
+Name=Switch Frame Tap
+Comment=Watch and record your Switch, streamed over USB or the network
+Exec=$BIN --app
+Icon=switch-frame-tap
+Terminal=false
+Categories=Game;AudioVideo;
+DESK
+chmod 755 "$APPS"
+echo "installed: $BIN (and Switch Frame Tap in the applications menu)"
+if [ ! -f /etc/udev/rules.d/99-switch-frame-tap.rules ]; then
+    echo
+    echo "Once, so the viewer may open the Switch over USB (asks for your password):"
+    echo "  sudo cp \"$D/99-switch-frame-tap.rules\" /etc/udev/rules.d/ && sudo udevadm control --reload-rules && sudo udevadm trigger"
+fi
+SH
+chmod +x "$P/install.sh"
+cat > "$P/README.txt" <<TXT
+Switch Frame Tap $VER - the Linux viewer, for any distribution (x86_64)
+
+  ./install.sh
+
+installs it for your user (the applications menu: Switch Frame Tap) and shows
+the one command, with sudo, that lets it open the Switch over USB. Or run it
+from here: ./switch-frame-tap-viewer --app
+
+One binary: FFmpeg (H.264, AAC, MP4), SDL 2 and libusb are built in. It
+uses your system's glibc (2.35 or newer), libudev, and its X11 or Wayland
+and PulseAudio/PipeWire for the window and the sound.
+https://github.com/TomasUribe/switch-frame-tap
+TXT
+tar -C "$OUT" -czf "$REPO/dist/switch-frame-tap-$VER-linux.tar.gz" "switch-frame-tap-$VER-linux"
+echo "== $REPO/dist/switch-frame-tap-$VER-linux.tar.gz"
+tar -tzf "$REPO/dist/switch-frame-tap-$VER-linux.tar.gz"

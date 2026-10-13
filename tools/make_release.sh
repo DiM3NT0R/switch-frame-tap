@@ -26,7 +26,10 @@ done
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE/atmosphere/contents/0100000000000C20/flags" "$STAGE/switch/.overlays" "$STAGE/switch/switch-frame-tap"
-cp "$REPO/tier4/applet-mitm/applet-mitm.nsp" "$STAGE/atmosphere/contents/0100000000000C20/exefs.nsp"
+# AMS_TREE / DKP_IMG (tier4/applet-mitm/build.sh) pick the Atmosphere the
+# sysmodule is built against - v0.7.11: ref/Atmosphere-1.12.0 for firmware 23
+NSP="$REPO/tier4/applet-mitm/applet-mitm${AMS_TREE:+-$(basename "$AMS_TREE")}.nsp"
+cp "$NSP" "$STAGE/atmosphere/contents/0100000000000C20/exefs.nsp"
 : > "$STAGE/atmosphere/contents/0100000000000C20/flags/boot2.flag"
 # lets sysmodule managers (ovl-sysmodules and the like) list it by name
 cat > "$STAGE/atmosphere/contents/0100000000000C20/toolbox.json" <<JSON
