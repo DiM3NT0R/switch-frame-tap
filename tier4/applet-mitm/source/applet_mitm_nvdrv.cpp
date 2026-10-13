@@ -36,7 +36,13 @@ namespace ams::mitm::applet {
         static_assert(sizeof(RecHdr) == 32);
 
         constexpr const char *RecPath = "sdmc:/nvenc-grc.bin";
+        /* v0.7.10: full size only in research builds (the interceptor is
+         * compiled out of releases, applet_mitm_main.cpp) */
+#if SFT_GRC_RESEARCH
         constexpr size_t RecCap = 256 * 1024;
+#else
+        constexpr size_t RecCap = 4 * 1024;
+#endif
         constexpr u32 MaxDumpedSubmits = 8;
         constexpr size_t MaxIoctlBytes = 512;
 

@@ -1,5 +1,6 @@
 #include "applet_mitm_shot.hpp"
 #include "applet_mitm_png.hpp"
+#include "applet_mitm_sm.hpp"
 #include "applet_mitm_log.hpp"
 #include <cstdio>
 
@@ -43,6 +44,7 @@ namespace ams::mitm::applet {
                      * controller settings (2144-0001). Nothing here changes
                      * any controller configuration now: hidInitialize maps
                      * aruid 0's shared memory, padUpdate only reads it. */
+                    SmUse sm_hid;
                     const ::Result rh = hidInitialize();
                     time_ok = R_SUCCEEDED(timeInitialize());
                     LogLine("shot: input up (read-only) - hid rc=0x%x, time %s",
@@ -131,6 +133,8 @@ namespace ams::mitm::applet {
         os::SetThreadNamePointer(std::addressof(g_input_thread), "applet-mitm.ShotInput");
         os::StartThread(std::addressof(g_input_thread));
     }
+
+    bool ShotRequestPending() { return g_shot_request_tick.load(std::memory_order_relaxed) != 0; }
 
     bool TakeShotRequest() {
         const u64 t = g_shot_request_tick.exchange(0, std::memory_order_relaxed);

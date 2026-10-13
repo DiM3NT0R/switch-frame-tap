@@ -1,6 +1,7 @@
 #include "applet_mitm_service.hpp"
 #include <cstdio>
 #include <cstring>
+#include "applet_mitm_sm.hpp"
 #include "applet_mitm_log.hpp"
 #include "applet_mitm_gbuf.hpp"
 #include "applet_mitm_nv.hpp"
@@ -309,6 +310,19 @@ namespace ams::mitm::applet {
 
     Result CreateSessionViaSm(os::NativeHandle *out_server, os::NativeHandle *out_client) {
         std::scoped_lock lk(g_sess_lock);
+        /* v0.7.10: this runs inside the game's request, on the thread that
+         * will write its reply, and our sm IPC goes through the same TLS
+         * message buffer. Opening sm (RegisterClient) and detaching are larger
+         * messages than GetServiceHandle alone and overwrote what the reply
+         * still needed: the game's next call never arrived and nn::vi aborted
+         * (v0.7.10-test5..7; likely also v0.7.1's broken first pair, which
+         * sent RegisterService). Restore the buffer on the way out. */
+        struct TlsSave {
+            u8 buf[0x100];
+            TlsSave()  { std::memcpy(buf, armGetTls(), sizeof(buf)); }
+            ~TlsSave() { std::memcpy(armGetTls(), buf, sizeof(buf)); }
+        } tls_save;
+        SmUse sm_use;   /* v0.7.10: sm only while needed (closed before tls_save restores) */
         if (g_sess_port == os::InvalidNativeHandle) {
             if (const Result rc = sm::RegisterService(std::addressof(g_sess_port), SessServiceName, 64, false); R_FAILED(rc)) {
                 g_sess_port = os::InvalidNativeHandle;
@@ -344,7 +358,7 @@ namespace ams::mitm::applet {
 
         void AppWatchThread(void *) {
             u64 last = ~UINT64_C(0);
-            const bool info_ok = R_SUCCEEDED(::pminfoInitialize());
+            const bool info_ok = [] { SmUse sm_pm; return R_SUCCEEDED(::pminfoInitialize()); }();
             for (;;) {
                 os::ProcessId pid{};
                 const u64 now = R_SUCCEEDED(::ams::pm::dmnt::GetApplicationProcessId(std::addressof(pid))) ? pid.value : 0;

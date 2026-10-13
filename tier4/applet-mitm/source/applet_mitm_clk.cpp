@@ -17,6 +17,7 @@
  * can do is raise an idle engine's clock, which every video player does.
  */
 #include "applet_mitm_clk.hpp"
+#include "applet_mitm_sm.hpp"
 #include "applet_mitm_log.hpp"
 #include "applet_mitm_nv.hpp"
 #include <cstdio>
@@ -125,6 +126,7 @@ namespace ams::mitm::applet {
          * drop to one of those, or shows it is a timer. */
         void WatchClocks() {
             Service clk = {};
+            SmUse sm_clk_128;   /* v0.7.10: sm only while needed */
             if (R_FAILED(smGetService(std::addressof(clk), "clkrst"))) {
                 LogLine("   clk-watch: clkrst unavailable - not watching");
                 return;
@@ -201,6 +203,7 @@ namespace ams::mitm::applet {
     bool ClockRateOf(u32 pcv_module, u32 *out_hz) {
         *out_hz = 0;
         Service clk = {};
+        SmUse sm_clk_204;   /* v0.7.10: sm only while needed */
         if (R_FAILED(smGetService(std::addressof(clk), "clkrst"))) { return false; }
         const ::Result rc = ClkrstRate(std::addressof(clk), pcv_module, out_hz);
         serviceClose(std::addressof(clk));
@@ -209,6 +212,7 @@ namespace ams::mitm::applet {
 
     void ClockSurvey(const char *label) {
         Service clk = {};
+        SmUse sm_clk_212;   /* v0.7.10: sm only while needed */
         const ::Result src = smGetService(std::addressof(clk), "clkrst");
         if (R_FAILED(src)) {
             LogLine("   clk[%s]: clkrst unavailable rc=0x%x", label, src);
@@ -236,6 +240,7 @@ namespace ams::mitm::applet {
         if (g_holding) { return true; }
 
         if (!g_mm_open) {
+            SmUse sm_clk_239;   /* v0.7.10: sm only while needed */
             const ::Result rc = smGetService(std::addressof(g_mm_srv), "mm:u");
             LogLine("   clk(%s): smGetService(mm:u) rc=0x%x", who, rc);
             if (R_FAILED(rc)) { return false; }

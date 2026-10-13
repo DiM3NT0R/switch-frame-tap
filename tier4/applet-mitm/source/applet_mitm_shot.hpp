@@ -26,6 +26,7 @@ namespace ams::mitm::applet {
 
     /* a fresh (< 3 s old) request, consumed; stale ones are dropped */
     bool TakeShotRequest();
+    bool ShotRequestPending();   /* without taking it */
 
     /* the visible w x h of a block-linear A8B8G8R8 surface -> PNG */
     /* flip: bit 0 mirror horizontally, bit 1 vertically (v0.4.1: the present's transform) */

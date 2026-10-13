@@ -1,6 +1,7 @@
 #include "applet_mitm_uvc.hpp"
 #include "applet_mitm_net.hpp"
 #include "applet_mitm_control.hpp"
+#include "applet_mitm_donor.hpp"
 #include <cstdio>
 #include "applet_mitm_nv.hpp"
 #include "applet_mitm_log.hpp"
@@ -83,6 +84,16 @@ namespace ams::mitm::applet {
                     R_SUCCEED();
                 }
 
+                /* v0.7.10: the memory donor (applet_mitm_donor.hpp) */
+                Result Donate(u64 size, sf::CopyHandle &&tmem) {
+                    DonorAccept(size, tmem.GetOsHandle());
+                    tmem.Detach();
+                    R_SUCCEED();
+                }
+                Result DonateFailed(u32 rc) {
+                    DonorFailed(rc);
+                    R_SUCCEED();
+                }
                 Result SetAppExcluded(u64 program_id, u8 excluded) {
                     if (program_id == 0) { R_SUCCEED(); }
                     {
@@ -102,7 +113,7 @@ namespace ams::mitm::applet {
 
         using ControlServerOptions = sf::hipc::DefaultServerManagerOptions;
         constexpr sm::ServiceName ControlServiceName = sm::ServiceName::Encode("sftap");
-        constexpr size_t ControlMaxSessions = 2;
+        constexpr size_t ControlMaxSessions = 3;   /* app, overlay, v0.7.10: the memory donor */
 
         sf::hipc::ServerManager<1, ControlServerOptions, ControlMaxSessions> g_control_manager;
         constinit sf::UnmanagedServiceObject<IStreamControl, StreamControl> g_control_object;

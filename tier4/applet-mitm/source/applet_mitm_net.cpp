@@ -3,6 +3,7 @@
  * SysDVR's sysmodule (GPL-2.0, sysmodule/source/net/sockets.c).
  */
 #include "applet_mitm_net.hpp"
+#include "applet_mitm_sm.hpp"
 #include "applet_mitm_log.hpp"
 /* the umbrella <switch.h> wraps libnx in extern "C"; the single headers do not */
 extern "C" {
@@ -138,7 +139,10 @@ namespace ams::mitm::applet {
 
         void NetThread(void *) {
             /* wait for a network: nifm reports an IP once the console is online */
-            ::Result rc = nifmInitialize(NifmServiceType_User);
+            ::Result rc = 0;
+            {
+            SmUse sm_net;   /* v0.7.10: sm only for these two (this thread never returns) */
+            rc = nifmInitialize(NifmServiceType_User);
             if (R_FAILED(rc)) { LogLine("net: nifmInitialize rc=0x%x - no network transport", rc); return; }
             const BsdInitConfig cfg = {
                 .version = 1,
@@ -149,6 +153,7 @@ namespace ams::mitm::applet {
                 .sb_efficiency = Efficiency,
             };
             rc = bsdInitialize(&cfg, 3, BsdServiceType_User);
+            }
             LogLine("net: bsd:u with %zu KB of transfer memory rc=0x%x", TmemSize / 1024, rc);
             if (R_FAILED(rc)) { return; }
 

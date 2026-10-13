@@ -29,6 +29,7 @@
  * request = _NV_IOWR(0, 0x01, sizeof) -> 0xC0??0001 with ?? = total size.
  */
 #include "applet_mitm_nv.hpp"
+#include "applet_mitm_sm.hpp"
 #include "applet_mitm_log.hpp"
 #include "applet_mitm_dmdbg.hpp"
 #include "vic40_config.hpp"
@@ -44,6 +45,7 @@
 #include "nvenc_1080p.h"
 #include "applet_mitm_dbgpump.hpp"
 #include "applet_mitm_shot.hpp"
+#include "applet_mitm_donor.hpp"
 #include "applet_mitm_audio.hpp"
 #include "applet_mitm_uvc.hpp"
 #include "applet_mitm_net.hpp"
@@ -97,8 +99,12 @@ namespace ams::mitm::applet {
 
         constinit std::atomic<bool> g_blit_done{false};
 
-        /* Static so the allocator is never in the path. */
-        alignas(0x1000) constinit u8 g_nv_tmem_buf[0x40000] = {};
+        /* Static so the allocator is never in the path. v0.7.10: it must be
+         * our own memory - it cannot live in the donor's (applet_mitm_donor):
+         * transfer memory cannot be made from memory that is itself lent
+         * (vb:2_tmem failed, test10). */
+        constexpr size_t NvTmemSize = 0x40000;
+        alignas(0x1000) constinit u8 g_nv_tmem_buf[NvTmemSize] = {};
 
         /* VIC buffers live on the REAL process heap, not in .bss.
          *
@@ -124,9 +130,15 @@ namespace ams::mitm::applet {
          * process will actually grant rather than guessing, and size the capture
          * to whatever we get. 2 MB granularity is the AllocateMemoryBlock unit. */
         constexpr size_t VicBufsEnd  = 0x360000;  /* cfg+cmd+dst+src all live below this */
-        /* v0.7.10: the heap held for the whole boot - the engine buffers only */
-        constexpr size_t VicBaseHeap = 4 * 1024 * 1024;
-        static_assert(VicBufsEnd <= VicBaseHeap);
+        /* v0.7.10: the dmnt:cht bounce used to be 2 MB of .bss for the whole
+         * boot, in the Applet pool the browser applets need nearly all of
+         * (2210-1024); it now sits here, taken when a viewer first connects.
+         * Not nvmap-mapped (it must not be). */
+        constexpr size_t VicBounceOff = 0x400000;                   /* 2 MB: dmnt:cht read bounce */
+        constexpr size_t VicBounceSize = 0x200000;
+        /* the heap held once streaming has started - engine buffers and the above */
+        constexpr size_t VicBaseHeap = VicBounceOff + VicBounceSize;
+        static_assert(VicBufsEnd <= VicBounceOff);
         /* M59 RELAYOUT - the blocker M56 predicted. Staging used to start
          * 983,040 B into the capture region, which collided with a resident
          * full frame (8,294,400 B). It now starts past a whole slot. */
@@ -203,8 +215,49 @@ namespace ams::mitm::applet {
             }
         }
 
+        /* v0.7.10: the VIC heap and capture region come from the memory donor
+         * (applet_mitm_donor.hpp), not our own heap */
+        constinit bool g_donor_mode = false;
+
+        void SetVicLayout(uintptr_t addr, size_t size) {
+            g_vic_heap_size = size;
+            g_vic_heap    = addr;
+            g_vic_cfg_buf = reinterpret_cast<u8 *>(addr + 0x0000);
+            g_vic_cmd_buf = reinterpret_cast<u8 *>(addr + 0x4000);
+            g_vic_dst_buf = reinterpret_cast<u8 *>(addr + 0x10000);
+            g_vic_src_buf = reinterpret_cast<u8 *>(addr + 0x350000);
+            g_ind_buf = nullptr;
+            g_ind_size = 0;
+            g_stage_buf = nullptr;
+            g_stream_stage[0] = g_stream_stage[1] = nullptr;
+            std::memset(reinterpret_cast<void *>(addr), 0, VicBaseHeap);
+        }
+
         bool AllocVicHeap() {
             if (g_vic_heap != 0) { return true; }
+
+            {
+                uintptr_t daddr = 0;
+                size_t dsize = 0;
+                if (DonorObtain(std::addressof(daddr), std::addressof(dsize))) {
+                    if (dsize >= VicBaseHeap + 6_MB) {
+                        g_donor_mode = true;
+                        SetVicLayout(daddr, VicBaseHeap);
+                        g_vic_heap_size = dsize;
+                        LogLine("   VIC heap from the donor: %zu MB at 0x%lx (engine buffers %zu MB, capture region %zu MB)",
+                                dsize >> 20, static_cast<unsigned long>(daddr), VicBaseHeap >> 20, (dsize - VicBaseHeap) >> 20);
+                        return true;
+                    }
+                    LogLine("   donor gave only %zu MB", dsize >> 20);
+                    DonorRelease();
+                } else {
+                    LogLine("   no donor");
+                }
+                /* v0.7.10: the module lives in the System pool, where every
+                 * custom sysmodule shares a few MB - never take the streaming
+                 * memory from there */
+                if (g_release_mode) { LogLine("   not streaming: no memory from the donor (is atmosphere/contents/0100000000000C21 installed?)"); return false; }
+            }
 
             size_t want = 0;
             /* measurement point 2 of 3: what the budget looks like at PROBE
@@ -306,8 +359,21 @@ namespace ams::mitm::applet {
         bool CaptureAcquire(const char *who) {
             if (g_ind_buf != nullptr) { return true; }
             if (g_vic_heap == 0) { return false; }
+            if (g_donor_mode) {
+                const size_t cap = g_vic_heap_size - VicBaseHeap;
+                g_ind_buf  = reinterpret_cast<u8 *>(g_vic_heap + VicBaseHeap);
+                g_ind_size = cap;
+                g_stage_buf = g_ind_buf + FbBlockRowStage;
+                g_stream_stage[0] = g_stage_buf + StreamStageSize;
+                g_stream_stage[1] = g_stream_stage[0] + StreamStageSize;
+                std::memset(g_ind_buf, 0, cap);
+                LogLine("   %s: capture memory (donor): %zu MB at %p", who, cap / (1024 * 1024), static_cast<void *>(g_ind_buf));
+                return true;
+            }
             size_t total = 0;
-            for (const size_t sz : { 40_MB, 36_MB, 32_MB, 28_MB, 24_MB, 20_MB, 16_MB, 12_MB, 10_MB }) {
+            /* v0.7.10: every rung 2 MB up with the base heap, so the capture
+             * region is exactly the size it was (frame rate and latency unchanged) */
+            for (const size_t sz : { 42_MB, 38_MB, 34_MB, 30_MB, 26_MB, 22_MB, 18_MB, 14_MB, 12_MB }) {
                 if (R_SUCCEEDED(os::SetMemoryHeapSize(sz))) { total = sz; break; }
             }
             if (total == 0) { LogLine("   %s: capture memory: no heap size accepted - the Applet pool is short (an applet open?)", who); return false; }
@@ -339,6 +405,15 @@ namespace ams::mitm::applet {
                     LogLine("   %s: capture memory kept (%s)", who, g_engine_wedged ? "an engine job never completed" : "an nvmap handle on it is still alive");
                     said_kept = true;
                 }
+                return;
+            }
+            if (g_donor_mode) {
+                /* the donor's memory stays mapped (experiment 1) */
+                g_ind_buf = nullptr;
+                g_ind_size = 0;
+                g_stage_buf = nullptr;
+                g_stream_stage[0] = g_stream_stage[1] = nullptr;
+                LogLine("   %s: capture memory (donor) released", who);
                 return;
             }
             os::FreeMemoryBlock(reinterpret_cast<uintptr_t>(g_ind_buf), g_ind_size);
@@ -601,17 +676,26 @@ namespace ams::mitm::applet {
          * (two per stream session); the capture region can only go back to
          * the system once nothing references it. True when nvmap let go of the
          * memory (flags bit 0, NOT_FREED_YET, clear). */
+        /* The reply (yuzu's nvmap IocFree) is the freed memory's address and
+         * size, and flags bit 0 = it was mapped uncached. Address and size 0:
+         * our handle is gone but another reference (an internal dup) still
+         * holds the memory. v0.7.10: test12 read flags bit 0 as "still
+         * referenced", so every free counted as failed and the capture region
+         * (and the donor's memory) was never given back. */
         bool NvmapFree(u32 fd, u32 handle) {
-            struct { u32 handle; u32 pad; u64 refcount; u32 size; u32 flags; } a = { handle, 0, 0, 0, 0 };
+            struct { u32 handle; u32 pad; u64 address; u32 size; u32 flags; } a = { handle, 0, 0, 0, 0 };
             static_assert(sizeof(a) == 24);
             u32 nverr = 0;
             const ::Result rc = NvIoctl(fd, NvmapIocFree, std::addressof(a), sizeof(a), std::addressof(nverr));
-            const bool ok = R_SUCCEEDED(rc) && nverr == 0 && (a.flags & 1) == 0;
-            if (!ok) {
-                LogLine("   nvmap FREE(handle %u) rc=0x%x nverr=%u refcount=%llu flags=%u - still referenced", handle, rc, nverr,
-                        static_cast<unsigned long long>(a.refcount), a.flags);
+            if (R_FAILED(rc) || nverr != 0) {
+                LogLine("   nvmap FREE(handle %u) rc=0x%x nverr=%u - failed", handle, rc, nverr);
+                return false;
             }
-            return ok;
+            if (a.address == 0 && a.size == 0) {
+                LogLine("   nvmap FREE(handle %u): our handle is gone, the memory is still referenced elsewhere", handle);
+                return false;
+            }
+            return true;
         }
 
         /* Three jobs, run back-to-back in one probe so a single reboot answers
@@ -1365,6 +1449,13 @@ namespace ams::mitm::applet {
 
     }
 
+    /* the dmnt:cht read bounce (applet_mitm_dmdbg.cpp): nullptr until the VIC
+     * heap exists - reads only happen while streaming, after it is taken */
+    u8 *VicBounceBuffer() {
+        return g_vic_heap != 0 ? reinterpret_cast<u8 *>(g_vic_heap + VicBounceOff) : nullptr;
+    }
+    size_t VicBounceBufferSize() { return VicBounceSize; }
+
     constinit bool g_dump_armed    = false;
     constinit u32  g_probe_delay_s = 120;
 
@@ -1429,6 +1520,10 @@ namespace ams::mitm::applet {
     namespace {
 
         constinit std::atomic<s32> g_vic_pending{-1};
+        /* v0.7.10: RunVicBlit gave the donor's memory back - run it again (it
+         * waits for the next viewer) */
+        constinit std::atomic<bool> g_rearm{false};
+        constinit s32 g_last_slot = 0;
         alignas(os::ThreadStackAlignment) constinit u8 g_vic_stack[32_KB];
         constinit os::ThreadType g_vic_thread;
 
@@ -1445,8 +1540,46 @@ namespace ams::mitm::applet {
          * declaration, and close_vic reads these to decide what to unpin. */
         u32 cfg_addr = 0, dst_addr = 0, src_addr = 0, self_addr = 0;
 
+        /* v0.7.10 measurement: in live mode, set up nothing - no heap, no
+         * nvdrv, no channels - until a viewer reads. With no viewer the module
+         * then holds only its image and static buffers in the Applet group,
+         * and the web applet test shows whether that alone fits. */
+        for (u32 heap_fails = 0;; ++heap_fails) {
+        if (g_live_armed && g_release_mode) {
+            if (heap_fails == 0) { LogLine("   engines: set up when a viewer connects (until then: no heap, no channels)"); }
+            VicStage("vb:wait_viewer");
+            /* a screenshot needs the engines too, viewer or not; neither while
+             * an applet such as the browser holds the Applet pool - the donor
+             * would take its memory and the applet abort (2210-1024) */
+            for (bool said_busy = false;;) {
+                while (!UsbViewerPresent(300) && !ShotRequestPending()) { os::SleepThread(TimeSpan::FromMilliSeconds(700)); }
+                u64 mb = 0;
+                const bool hold = AppletHoldActive();
+                if (!hold && !AppletBusy(std::addressof(mb))) { break; }
+                if (TakeShotRequest()) {
+                    LogLine("shot: an applet holds the Applet pool (%llu MB) - no screenshot now", static_cast<unsigned long long>(mb));
+                    NotifyShot("No screenshot while a manual, news or the eShop is open");
+                }
+                if (!said_busy) { LogLine("   engines: %s - waiting for it to close", hold ? "an applet is starting" : "an applet holds the Applet pool"); said_busy = true; }
+                VicStage("vb:applet_busy");
+                SetViewerReason(ViewerReason_AppletOpen);
+                os::SleepThread(TimeSpan::FromSeconds(2));
+            }
+            g_applet_needs_memory.store(false, std::memory_order_relaxed);
+            SetViewerReason(ViewerReason_Starting);
+            LogLine("   engines: %s - setting up", ShotRequestPending() ? "a screenshot was asked for" : "a viewer is reading");
+        }
         VicStage("vb:0_heap");
-        if (!AllocVicHeap()) { VicStage("vb:0_FAILED"); return; }
+        if (AllocVicHeap()) { break; }
+        VicStage("vb:0_FAILED");
+        /* v0.7.10: no memory from the donor (an applet just closed, or the
+         * donor is not installed): wait and try again, not give up for the boot */
+        if (!(g_live_armed && g_release_mode)) { return; }
+        if (TakeShotRequest()) { NotifyShot("Screenshot failed: not enough memory free"); }
+        if (heap_fails % 12 == 0) { LogLine("   engines: no streaming memory - trying again in 5 s"); }
+        SetViewerReason(ViewerReason_NoMemory);
+        os::SleepThread(TimeSpan::FromSeconds(5));
+        }
         /* the test paths (no live mode, or the colour sweep) use the capture
          * region from here on, for the whole boot, as before v0.7.10 */
         if ((!g_live_armed || g_csc_armed) && !CaptureAcquire("tests")) { VicStage("vb:0_FAILED"); return; }
@@ -1462,23 +1595,27 @@ namespace ams::mitm::applet {
          *   nvdrv:t (factory)    0xFFFFFFFF - everything
          * nvmap objects are bound to an AppletResourceUserId, so importing
          * another process's buffer plausibly needs the aruid bits we lack. */
-        ::Result rc = smGetService(std::addressof(g_nv_srv), "nvdrv:t");
+        ::Result rc = 0;
         const char *nv_svc = "nvdrv:t";
-        if (R_FAILED(rc)) {
-            LogLine("   nvdrv:t unavailable rc=0x%x - falling back", rc);
-            rc = smGetService(std::addressof(g_nv_srv), "nvdrv:s");
-            nv_svc = "nvdrv:s";
+        {
+            SmUse sm_nv;   /* v0.7.10: sm only for this (the live loop never returns) */
+            rc = smGetService(std::addressof(g_nv_srv), "nvdrv:t");
+            if (R_FAILED(rc)) {
+                LogLine("   nvdrv:t unavailable rc=0x%x - falling back", rc);
+                rc = smGetService(std::addressof(g_nv_srv), "nvdrv:s");
+                nv_svc = "nvdrv:s";
+            }
         }
         LogLine("   using %s rc=0x%x", nv_svc, rc);
         if (R_FAILED(rc)) { VicStage("vb:1_FAILED"); return; }
 
         VicStage("vb:2_tmem");
-        rc = tmemCreateFromMemory(std::addressof(g_nv_tmem), g_nv_tmem_buf, sizeof(g_nv_tmem_buf), Perm_None);
-        if (R_FAILED(rc)) { VicStage("vb:2_FAILED"); serviceClose(std::addressof(g_nv_srv)); return; }
+        rc = tmemCreateFromMemory(std::addressof(g_nv_tmem), g_nv_tmem_buf, NvTmemSize, Perm_None);
+        if (R_FAILED(rc)) { LogLine("   nvdrv transfer memory rc=0x%x", rc); VicStage("vb:2_FAILED"); serviceClose(std::addressof(g_nv_srv)); return; }
 
         VicStage("vb:3_Initialize");
         {
-            const u32 tmem_size = static_cast<u32>(sizeof(g_nv_tmem_buf));
+            const u32 tmem_size = static_cast<u32>(NvTmemSize);
             rc = serviceDispatchIn(std::addressof(g_nv_srv), 3, tmem_size,
                 .in_num_handles = 2,
                 .in_handles     = { CUR_PROCESS_HANDLE, g_nv_tmem.handle });
@@ -1743,6 +1880,26 @@ namespace ams::mitm::applet {
         serviceClose(std::addressof(g_nv_srv));
         tmemClose(std::addressof(g_nv_tmem));
         VicStage("vb:released");
+        /* v0.7.10: closing the nvdrv session freed every fd and nvmap handle
+         * on the donor's memory; unmap it, end the donor, and let the worker
+         * set up again for the next viewer */
+        if (g_donor_mode) {
+            DonorRelease();
+            g_donor_mode = false;
+            g_vic_heap = 0;
+            g_vic_heap_size = 0;
+            g_vic_cfg_buf = g_vic_cmd_buf = g_vic_dst_buf = g_vic_src_buf = nullptr;
+            g_ind_buf = nullptr;
+            g_ind_size = 0;
+            g_stage_buf = nullptr;
+            g_stream_stage[0] = g_stream_stage[1] = nullptr;
+            g_ctrl_fd = 0;
+            g_guard_nvmap_fd = 0;
+            g_guard_next = 0x9000;
+            g_blit_done.store(false);
+            g_rearm.store(true);
+            LogLine("   engines closed, the donor's memory given back - set up again when a viewer connects");
+        }
     }
 
         /* ---- vi indirect-layer capture ------------------------------------
@@ -1772,6 +1929,7 @@ namespace ams::mitm::applet {
                 const char *name = std::get<0>(v);
                 const u32 cmd = std::get<1>(v), mode = std::get<2>(v);
 
+                SmUse sm_vi;
                 ::Result r = smGetService(std::addressof(vi_root), name);
                 if (R_FAILED(r)) { LogLine("   smGetService(%s) rc=0x%x", name, r); continue; }
 
@@ -2554,7 +2712,7 @@ namespace ams::mitm::applet {
             return FindSwapchainBySize(dbg, want, base);
         }
 
-        [[noreturn]] void RunLive(u32 vfd, u32 nvmap_fd, u32 cmd_handle, u32 syncpt, u32 cfg_addr) {
+        void RunLive(u32 vfd, u32 nvmap_fd, u32 cmd_handle, u32 syncpt, u32 cfg_addr) {
             LogLine("   ==== LIVE MODE (M86): streaming whenever a viewer is reading and a game is running ====");
             /* M98: a release install captures only on the firmware it was
              * tested on (22.x; v0.7.8: 21.x too, a user's 21.0.1); the debug
@@ -2566,19 +2724,36 @@ namespace ams::mitm::applet {
                     LogLine("   live: firmware %u.%u.%u is untested (this build: 21.x-22.x) - not streaming. allow_untested_firmware = 1 in config.ini overrides.",
                             HOSVER_MAJOR(v), HOSVER_MINOR(v), HOSVER_MICRO(v));
                     VicStage("live:untested_fw");
-                    for (;;) { os::SleepThread(TimeSpan::FromSeconds(3600)); }
+                    SetViewerReason(ViewerReason_Unsupported);
+                    for (;;) { static_cast<void>(UsbViewerPresent(300)); os::SleepThread(TimeSpan::FromSeconds(2)); }
                 }
             }
             u64 skip_pid = 0;          /* a game whose swapchain was not found: wait for another */
             bool said_wait_viewer = false, said_wait_game = false;
             u32 sessions = 0;
             bool said_off = false;
+            /* v0.7.10: with no viewer for this long, close the engines and give
+             * the donor's memory back (RunVicBlit tears down and sets up again
+             * for the next viewer) - the browser applets need that pool */
+            constexpr u64 IdleTeardownNs = 15'000'000'000ull;
+            u64 idle_since = 0;
+            auto idle_long = [&]() -> bool {
+                const u64 now = armTicksToNs(armGetSystemTick());
+                if (idle_since == 0) { idle_since = now; }
+                return g_donor_mode && now - idle_since >= IdleTeardownNs && g_ind_buf == nullptr && g_capture_handles == 0;
+            };
             for (;;) {
                 if (g_engine_wedged) {
                     g_live_state.store(LiveState_Wedged, std::memory_order_relaxed);
                     VicStage("live:engine_wedged");
                     LogLine("   live: the engine is wedged - no more streaming this boot");
-                    for (;;) { os::SleepThread(TimeSpan::FromSeconds(3600)); }
+                    SetViewerReason(ViewerReason_Wedged);
+                    for (;;) { static_cast<void>(UsbViewerPresent(300)); os::SleepThread(TimeSpan::FromSeconds(2)); }
+                }
+                /* v0.7.10: an applet is starting - give the donor's memory back now */
+                if (g_applet_needs_memory.load(std::memory_order_relaxed) && g_donor_mode) {
+                    CaptureRelease("live");
+                    if (g_ind_buf == nullptr && g_capture_handles == 0) { LogLine("   live: an applet needs the memory - closing the engines now"); return; }
                 }
                 /* M99: a screenshot while not streaming: attach just for it */
                 if (TakeShotRequest()) { static_cast<void>(ShotStandalone()); }
@@ -2586,7 +2761,9 @@ namespace ams::mitm::applet {
                 if (!g_stream_enabled.load(std::memory_order_relaxed)) {
                     g_live_state.store(LiveState_Off, std::memory_order_relaxed);
                     if (!said_off) { LogLine("   live: turned off (overlay)"); VicStage("live:off"); said_off = true; }
+                    SetViewerReason(ViewerReason_Off);
                     CaptureRelease("live");
+                    if (idle_long()) { LogLine("   live: off for 15 s - closing the engines, memory back to the system"); return; }
                     os::SleepThread(TimeSpan::FromMilliSeconds(250));
                     continue;
                 }
@@ -2595,10 +2772,12 @@ namespace ams::mitm::applet {
                     g_live_state.store(LiveState_WaitViewer, std::memory_order_relaxed);
                     if (!said_wait_viewer) { LogLine("   live: waiting for a viewer (raw-view) to read the stream"); VicStage("live:no_viewer"); said_wait_viewer = true; }
                     CaptureRelease("live");
+                    if (idle_long()) { LogLine("   live: no viewer for 15 s - closing the engines, memory back to the system"); return; }
                     os::SleepThread(TimeSpan::FromMilliSeconds(700));
                     continue;
                 }
                 said_wait_viewer = false;
+                idle_since = 0;
 
                 ::ams::os::ProcessId pid{};
                 const u32 q_before = g_queue_count.load(std::memory_order_relaxed);
@@ -2612,6 +2791,7 @@ namespace ams::mitm::applet {
                  * such as TiCo refuse to run under a debugger) */
                 if (have_app && g_app_excluded.load(std::memory_order_relaxed)) {
                     g_live_state.store(LiveState_Excluded, std::memory_order_relaxed);
+                    SetViewerReason(ViewerReason_Excluded);
                     if (!said_wait_game) { LogLine("   live: %016llx is excluded - not attaching", static_cast<unsigned long long>(g_app_tid.load())); VicStage("live:excluded"); said_wait_game = true; }
                     CaptureRelease("live");
                     os::SleepThread(TimeSpan::FromMilliSeconds(500));
@@ -2619,6 +2799,7 @@ namespace ams::mitm::applet {
                 }
                 if (!have_app || pid.value == skip_pid || !presenting) {
                     g_live_state.store(LiveState_WaitGame, std::memory_order_relaxed);
+                    SetViewerReason(!have_app ? ViewerReason_NoGame : (pid.value == skip_pid ? ViewerReason_NotFound : ViewerReason_GameHidden));
                     if (!said_wait_game) {
                         LogLine("   live: viewer present; waiting for a game (%s)",
                                 !have_app ? "no application" : (pid.value == skip_pid ? "this game's swapchain was not found" : "not presenting"));
@@ -2639,10 +2820,12 @@ namespace ams::mitm::applet {
                     static u32 short_n = 0;
                     if ((short_n++ % 15) == 0) { LogLine("   live: not enough memory free to stream right now - trying again"); }
                     VicStage("live:no_memory");
+                    SetViewerReason(ViewerReason_NoMemory);
                     os::SleepThread(TimeSpan::FromSeconds(2));
                     continue;
                 }
 
+                SetViewerReason(ViewerReason_Starting);
                 ++sessions;
                 g_live_sessions.store(sessions, std::memory_order_relaxed);
                 ::ams::svc::Handle dbg = ::ams::svc::InvalidHandle;
@@ -2710,7 +2893,7 @@ namespace ams::mitm::applet {
 
         void TryDebugCapture(u32 vfd, u32 nvmap_fd, u32 cmd_handle, u32 syncpt, u32 cfg_addr, u32 dst_addr) {
             if (!g_dbg_armed) { return; }
-            if (g_live_armed) { RunLive(vfd, nvmap_fd, cmd_handle, syncpt, cfg_addr); }
+            if (g_live_armed) { RunLive(vfd, nvmap_fd, cmd_handle, syncpt, cfg_addr); return; }
 
             VicStage("dbg:1_find_pid");
             if (g_pmdmnt_rc != 0) {
@@ -6104,6 +6287,7 @@ namespace ams::mitm::applet {
             g_live_w.store(w, std::memory_order_relaxed);
             g_live_h.store(h, std::memory_order_relaxed);
             g_live_state.store(LiveState_Streaming, std::memory_order_relaxed);
+            SetViewerReason(ViewerReason_None);
             g_vic_quiet = true;
             ON_SCOPE_EXIT { g_vic_quiet = false; };
 
@@ -6263,6 +6447,7 @@ namespace ams::mitm::applet {
                 g_live_w.store(L.w, std::memory_order_relaxed);
                 g_live_h.store(L.h, std::memory_order_relaxed);
                 g_live_state.store(LiveState_Streaming, std::memory_order_relaxed);
+                SetViewerReason(ViewerReason_None);
             }
             /* v0.6: the P setup, and the bitrate experiment's variants of it.
              * grc's P setup (ours since M85) searches motion only from the
@@ -6526,6 +6711,7 @@ namespace ams::mitm::applet {
                 u64 rn = 0; u32 sg = 0;
                 const u64 t0 = armTicksToNs(armGetSystemTick());
                 if (live && !g_stream_enabled.load(std::memory_order_relaxed)) { why = "turned off from the overlay"; end = StreamEnd::Disabled; break; }
+                if (live && g_applet_needs_memory.load(std::memory_order_relaxed)) { why = "an applet (manual, news, eShop) needs the memory"; end = StreamEnd::Disabled; break; }
                 if (live && g_reconfig_request.exchange(false, std::memory_order_relaxed)) { why = "new settings from the manager app"; end = StreamEnd::Reconfigure; break; }
                 if (live && g_app_excluded.load(std::memory_order_relaxed)) { why = "this app was excluded"; end = StreamEnd::Disabled; break; }
                 /* v0.7.1: the game made new frame buffers (Minecraft loading a
@@ -7615,8 +7801,10 @@ namespace ams::mitm::applet {
                 os::SleepThread(TimeSpan::FromMilliSeconds(200));
                 const s32 slot = g_vic_pending.exchange(-1, std::memory_order_acq_rel);
                 if (slot >= 0) {
+                    g_last_slot = slot;
                     RunVicBlit(slot);
                 }
+                while (g_rearm.exchange(false)) { RunVicBlit(g_last_slot); }
             }
         }
 

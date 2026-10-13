@@ -84,6 +84,7 @@
 #define SFT_FLAG_H264      2u
 #define SFT_FLAG_KEY       4u   /* M85: an IDR access unit (H.264 only) */
 #define SFT_FLAG_AUDIO     8u   /* v0.3: game audio, 16-bit stereo PCM (width = rate, height = channels) */
+#define SFT_FLAG_STATUS   16u   /* v0.7.10: with AUDIO (rate 0, so older viewers drop it): why there is no picture */
 
 #pragma pack(push, 1)
 typedef struct {
@@ -525,6 +526,41 @@ static SDL_cond *g_q_put = NULL, *g_q_get = NULL;
 static volatile int g_rd_stop = 0;
 static SDL_Thread *g_rd = NULL;
 
+/* v0.7.10: the console's reason for sending no picture (a status packet after
+ * each idle probe), shown on the menu while it is fresh */
+typedef struct { uint32_t version, reason; char head[64]; char detail[120]; } sft_status_t;
+static SDL_SpinLock g_status_lock = 0;
+static sft_status_t g_status;
+static Uint64 g_status_t = 0;
+
+static void status_packet(const uint8_t *d, uint32_t n)
+{
+    if (n < sizeof(sft_status_t)) return;
+    sft_status_t st;
+    memcpy(&st, d, sizeof(st));
+    st.head[sizeof(st.head) - 1] = 0;
+    st.detail[sizeof(st.detail) - 1] = 0;
+    SDL_AtomicLock(&g_status_lock);
+    g_status = st;
+    g_status_t = SDL_GetTicks64();
+    SDL_AtomicUnlock(&g_status_lock);
+}
+
+/* 1 with the console's status if one arrived in the last 4 s */
+static int status_for_menu(char *head, size_t hn, char *detail, size_t dn, uint32_t *reason)
+{
+    int fresh = 0;
+    SDL_AtomicLock(&g_status_lock);
+    if (g_status_t != 0 && SDL_GetTicks64() - g_status_t < 4000 && g_status.reason != 0) {
+        snprintf(head, hn, "%s", g_status.head);
+        snprintf(detail, dn, "%s", g_status.detail);
+        *reason = g_status.reason;
+        fresh = 1;
+    }
+    SDL_AtomicUnlock(&g_status_lock);
+    return fresh;
+}
+
 static int reader_main(void *arg)
 {
     (void)arg;
@@ -539,6 +575,7 @@ static int reader_main(void *arg)
             static uint8_t abuf[64 * 1024];
             if (hdr.length > sizeof(abuf)) { static uint8_t sink[4096]; for (uint32_t k = 0; k < hdr.length; k += sizeof(sink)) read_exact(sink, (hdr.length - k) < sizeof(sink) ? (hdr.length - k) : sizeof(sink), 5000); continue; }
             if (read_exact(abuf, hdr.length, 5000) != (int)hdr.length) continue;
+            if (hdr.flags & SFT_FLAG_STATUS) { status_packet(abuf, hdr.length); continue; }
             audio_packet(abuf, hdr.length, hdr.width, hdr.height);
             rec_audio(abuf, hdr.length, hdr.width, hdr.height, t);
             continue;

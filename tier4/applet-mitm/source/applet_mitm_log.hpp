@@ -33,6 +33,9 @@ namespace ams::mitm::applet {
     extern bool g_release_mode;
     extern u32 g_arm_probe_rc;    /* GetEntryType(applet-mitm.armed) at boot */
     void LogLine(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+    /* v0.7.10: true holds lines (and breadcrumbs) in memory, false writes them
+     * in one go - for a teardown that must not wait on the SD card */
+    void LogDefer(bool on);
 
     /* v0.7.7: an abort that says why first - the line reaches the SD card
      * (every LogLine is flushed) before the console shows the fatal screen.
@@ -78,5 +81,22 @@ namespace ams::mitm::applet {
      * `timeout_ms` for it to be taken. A cable with no viewer open stays
      * Configured, so UsbReady alone cannot tell. */
     bool UsbViewerPresent(u32 timeout_ms);
+    /* v0.7.10: why the viewer gets no picture, sent to it after each idle
+     * probe that finds it (a status packet old viewers ignore) - 0 while
+     * streaming */
+    enum ViewerReason : u32 {
+        ViewerReason_None        = 0,
+        ViewerReason_NoGame      = 1,
+        ViewerReason_GameHidden  = 2,
+        ViewerReason_AppletOpen  = 3,
+        ViewerReason_Off         = 4,
+        ViewerReason_Excluded    = 5,
+        ViewerReason_Unsupported = 6,
+        ViewerReason_Wedged      = 7,
+        ViewerReason_NoMemory    = 8,
+        ViewerReason_NotFound    = 9,
+        ViewerReason_Starting    = 10,
+    };
+    void SetViewerReason(ViewerReason r);
 
 }

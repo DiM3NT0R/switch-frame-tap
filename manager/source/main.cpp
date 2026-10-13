@@ -31,7 +31,7 @@
 
 namespace {
 
-    constexpr const char *AppVersion  = "0.7.9";
+    constexpr const char *AppVersion  = "0.7.10";
     constexpr u64 ModuleTid           = 0x0100000000000C20ull;
     constexpr const char *ModuleDir   = "sdmc:/atmosphere/contents/0100000000000C20";
     constexpr const char *ModuleNsp   = "sdmc:/atmosphere/contents/0100000000000C20/exefs.nsp";
@@ -608,6 +608,9 @@ namespace {
                     [path, needed] { return FileExists(path) ? ColGood : (needed ? ColBad : ColDim); }, nullptr, help });
             };
             check("Sysmodule", ModuleNsp, true, "atmosphere/contents/0100000000000C20/exefs.nsp - the part that streams.");
+            check("Memory helper", "sdmc:/atmosphere/contents/0100000000000C21/exefs.nsp", true,
+                  "atmosphere/contents/0100000000000C21/exefs.nsp - started only while a viewer is connected, it lends the "
+                  "streaming memory so that game manuals, news and the eShop work whenever you are not streaming.");
             check("Overlay", "sdmc:/switch/.overlays/switch-frame-tap.ovl", false,
                   "switch/.overlays/switch-frame-tap.ovl - stream on/off and handheld/docked from inside a game (needs the Tesla overlay loader).");
             rows.push_back({ Kind::Info, "Install type", [this] { return std::string(test_install ? "Test (applet-mitm.armed)" : "Release"); },

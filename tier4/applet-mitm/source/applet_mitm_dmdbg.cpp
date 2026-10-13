@@ -6,10 +6,14 @@
  * 65102 ReadCheatProcessMemory, 65104 QueryCheatProcessMemory).
  */
 #include "applet_mitm_dmdbg.hpp"
+#include "applet_mitm_sm.hpp"
 #include "applet_mitm_log.hpp"
 #include <cstring>
 
 namespace ams::mitm::applet {
+
+    u8 *VicBounceBuffer();
+    size_t VicBounceBufferSize();
 
     namespace {
 
@@ -26,8 +30,8 @@ namespace ams::mitm::applet {
          * one extra memcpy per piece. Smaller pieces were tried first
          * (256 KB): they worked but cost ~35 IPCs per 1080p frame and
          * pushed console latency past 100 ms. */
-        alignas(0x1000) constinit u8 g_bounce[0x200000];
-        constexpr size_t BouncePiece = sizeof(g_bounce);
+        /* v0.7.10: the 2 MB bounce is in the VIC heap (applet_mitm_nv.cpp), no
+         * longer .bss held for the whole boot */
 
         /* dmnt:cht allows 2 sessions; one shared session plus this lock, so a
          * screenshot racing the live loop cannot interleave requests. */
@@ -36,6 +40,7 @@ namespace ams::mitm::applet {
         bool ChtService() {
             if (!g_cht_init) {
                 g_cht_init = true;
+                SmUse sm_cht;
                 const ::Result rc = smGetService(std::addressof(g_cht), "dmnt:cht");
                 g_cht_ok = R_SUCCEEDED(rc);
                 LogLine("dmdbg: smGetService(dmnt:cht) rc=0x%x %s", rc,
@@ -105,10 +110,13 @@ namespace ams::mitm::applet {
         if (DbgIsDmnt(dbg)) {
             std::scoped_lock lk(g_cht_lock);
             u8 *out = static_cast<u8 *>(dst);
-            for (size_t off = 0; off < len; off += BouncePiece) {
-                const size_t n = (len - off < BouncePiece) ? (len - off) : BouncePiece;
-                if (R_FAILED(ChtRead(va + off, g_bounce, n))) { return false; }
-                std::memcpy(out + off, g_bounce, n);
+            u8 *bounce = VicBounceBuffer();
+            const size_t piece = VicBounceBufferSize();
+            if (bounce == nullptr) { return false; }
+            for (size_t off = 0; off < len; off += piece) {
+                const size_t n = (len - off < piece) ? (len - off) : piece;
+                if (R_FAILED(ChtRead(va + off, bounce, n))) { return false; }
+                std::memcpy(out + off, bounce, n);
             }
             return true;
         }

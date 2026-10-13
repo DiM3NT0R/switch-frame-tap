@@ -1,6 +1,7 @@
 #include "applet_mitm_log.hpp"
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 
 namespace ams::mitm::applet {
 
@@ -16,6 +17,21 @@ namespace ams::mitm::applet {
         constexpr s64 ReleaseLogCap = 4 * 1024 * 1024;
         constinit os::SdkMutex g_lock;
         constinit bool g_ready = false;
+        /* v0.7.10: held in memory while a teardown races an applet - each
+         * flushed line costs the SD ~15 ms, and 20 of them lost the race */
+        constinit bool g_defer = false;
+        constinit char g_defer_buf[8192];
+        constinit size_t g_defer_len = 0;
+
+        void AppendToLog(const char *data, size_t n) {
+            fs::FileHandle f;
+            if (R_FAILED(fs::OpenFile(std::addressof(f), LogPath, fs::OpenMode_Write | fs::OpenMode_AllowAppend))) { return; }
+            s64 size = 0;
+            static_cast<void>(fs::GetFileSize(std::addressof(size), f));
+            if (g_release_mode && size > ReleaseLogCap) { fs::CloseFile(f); return; }
+            static_cast<void>(fs::WriteFile(f, size, data, n, fs::WriteOption::Flush));
+            fs::CloseFile(f);
+        }
 
         void WriteWhole(const char *path, const char *data, size_t len) {
             fs::DeleteFile(path);
@@ -59,7 +75,7 @@ namespace ams::mitm::applet {
     void LogMark(const char *what) {
         {
             std::scoped_lock lk(g_lock);
-            if (g_ready) {
+            if (g_ready && !g_defer) {
                 char b[128];
                 const int n = std::snprintf(b, sizeof(b), "%s\n", what);
                 if (n > 0) { WriteWhole(LastPath, b, static_cast<size_t>(n)); }
@@ -88,16 +104,23 @@ namespace ams::mitm::applet {
         if (static_cast<size_t>(n) > sizeof(line) - 2) { n = sizeof(line) - 2; }
         line[n++] = '\n';
 
-        /* open/append/close every line so a crash can't lose it */
-        fs::FileHandle f;
-        if (R_FAILED(fs::OpenFile(std::addressof(f), LogPath, fs::OpenMode_Write | fs::OpenMode_AllowAppend))) {
+        if (g_defer) {
+            if (g_defer_len + static_cast<size_t>(n) <= sizeof(g_defer_buf)) {
+                std::memcpy(g_defer_buf + g_defer_len, line, static_cast<size_t>(n));
+                g_defer_len += static_cast<size_t>(n);
+            }
             return;
         }
-        s64 size = 0;
-        static_cast<void>(fs::GetFileSize(std::addressof(size), f));
-        if (g_release_mode && size > ReleaseLogCap) { fs::CloseFile(f); return; }
-        static_cast<void>(fs::WriteFile(f, size, line, n, fs::WriteOption::Flush));
-        fs::CloseFile(f);
+        /* open/append/close every line so a crash can't lose it */
+        AppendToLog(line, static_cast<size_t>(n));
+    }
+
+    void LogDefer(bool on) {
+        std::scoped_lock lk(g_lock);
+        if (on) { g_defer = true; return; }
+        g_defer = false;
+        if (g_ready && g_defer_len != 0) { AppendToLog(g_defer_buf, g_defer_len); }
+        g_defer_len = 0;
     }
 
 }

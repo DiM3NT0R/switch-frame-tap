@@ -128,35 +128,71 @@ process's framebuffer.
   Granting `svcDebugActiveProcess` in `syscalls` is necessary and not sufficient;
   `kern_svc_debug.cpp:38` also wants `force_debug`. M33 shipped without it.
 
-## *** v0.7.10 (work in progress): the web applet crash (SooraMaru) ***
+## *** v0.7.10: manuals, news and the eShop work (memory donor) ***
 
-- **Report:** games that open the web applet (Smash's manual/news) crash
-  with the module installed, even with streaming off. Photo: **2210-1024**
-  (module 210 = Web), program **0100000000000100F** (offline web applet) - the
-  applet aborts itself.
-- **v0.7.10-test (built, run once):** the capture region (~36 MB: frame copy,
-  arena, stream stages) is taken only when a stream starts (CaptureAcquire,
-  before the attach) and given back in every live wait state (CaptureRelease:
-  off / no viewer / excluded / no game) and after a standalone screenshot.
-  The boot heap is VicBaseHeap (4 MB: cfg, cmd, guard pages, dst, own src).
-  NvfSession now frees its two nvmap handles (NvmapFree, libnx's
-  nvioctlNvmap_Free) - never done before, two leaked per session; the region
-  is only released when g_capture_handles is 0 and no engine is wedged.
-  Result: still 2210-1024.
-- **Applet group limits logged every 250 ms** (pm:dmnt
-  AtmosphereGetCurrentLimitInfo): idle 107/500 MB, 40/96 threads, 3/32 tmem,
-  4/6 sessions; the web applet took memory to 298 MB (still rising), threads
-  41, sessions 5 - and died 1.7 s later. Our module is ~10 MB of that group
-  (6.5 MB image/bss + 4 MB heap). Reading: the group's 500 MB cap is sized for
-  the web applet with no slack, so any resident Applet-group footprint breaks
-  it (masagrator: "by design").
-- **Experiment: application_type 0 (System group):** boot fatal **2001-0132 in
-  am (0x23)** - the System group has no room for the module either. Reverted;
-  the user's SD went back to the v0.7.9 release.
-- **Direction:** a tiny resident part and a streaming worker that exists only
-  while a viewer is connected (zero Applet-group footprint otherwise), or a
-  much smaller resident footprint. The capture-on-demand and nvmap-free work
-  above stays: it is needed either way.
+- **Report (SooraMaru, masagrator):** with the module installed, the browser
+  applets (offline web 0100000000000100F: game manuals and news; the eShop)
+  aborted with **2210-1024**, streaming or not.
+- **Cause: the Applet pool.** The browser needs nearly all of it: the Applet
+  group (500 MB) went 96 MB idle -> **494 MB** at the manual's peak. Every
+  other homebrew sysmodule lives in pool 2 (System; ACID flags bits 2-5);
+  ours was the only one in pool 1. 6.5 MB resident crashed it, so did a
+  trimmed 2.9 MB; module off = fine. Atmosphère 1.12.0's changelog says the
+  same (stealing > 7 MB from the applet pool broke the browsers on 23.0).
+  The 250 ms limit snapshots never showed the failing allocation - memory was
+  wrongly ruled out at first, then sessions (a red herring) chased.
+- **Fix: the module moved to the System pool** (pool 2, System group, ~3 MB:
+  the grc IPC interceptor compiled out, -1.4 MB; the dmnt:cht bounce moved off
+  .bss, -2 MB) and **a memory donor** (tier4/donor, 0100000000000C21, an 11 KB
+  libnx program, no boot2 flag) lends the streaming memory: launched through
+  pm:shell when a viewer connects (or a screenshot is asked for), it takes
+  42 MB in the Applet pool and hands it over as transfer memory (sftap
+  command 10); VIC, NVENC, nvmap and usb:ds all accept it. 15 s without a
+  viewer (or turned off): the engines close, the memory goes back and the
+  donor exits - the Applet group is back to 96 MB and the browser works.
+- **Lessons on the way (all hit on hardware):**
+  - transfer memory cannot be made from memory that is itself lent (nvdrv's
+    tmem stays our own .bss);
+  - the kernel unmaps transfer memory only with no attribute left - the
+    engine buffers are Uncached (0xd401, attr 0x8): clear it first, and never
+    use os::UnmapTransferMemory (it aborts on a refusal - test13's fatal);
+  - nvmap FREE replies with the freed address/size, flags bit 0 = was
+    uncached - read as "still referenced", it kept the capture region forever;
+  - pm:shell TerminateProcess takes ~200 ms; the donor instead polls
+    svcSetHeapSize(0), refused while lent, and exits ~5 ms after the unmap;
+  - closing the last libnx sm session without smDetachClient unregisters
+    every service the process hosts (sftap:s - every game hung loading);
+  - our IPC from inside a request handler overwrites the TLS message the
+    reply is built in: save/restore it (CreateSessionViaSm).
+- **Guards:** no donor while an applet holds the pool (> 160 MB): a viewer
+  waits, a screenshot is refused with a notification. Reacting to an applet
+  that has started (a 20 ms watcher, the memory back in ~62 ms with deferred
+  logging and a donor that frees its own heap) is **too late**: the browser
+  takes its memory at once.
+- **The fix: the game's am (appletOE).** Wrapped for applications:
+  OpenApplicationProxy is forwarded with the game's pid (serviceMitmDispatch
+  .override_pid) and its IApplicationProxy wrapped; GetLibraryAppletCreator
+  (11) wrapped; CreateLibraryApplet (0) for a browser applet (0x13 Web, 0x14
+  Shop, 0x17 OfflineWeb, 0x18-0x1A) stops the stream and waits for the memory
+  (10-50 ms on hardware), then returns ResultShouldForwardToSession so am gets
+  the request unchanged. A 4 s hold keeps the donor away while the applet
+  starts. am's sessions are domains, and a mitm domain must reserve am's own
+  object ids: a 32-entry table aborted the module (fatal) on the first game -
+  now 0x1000 entries (~300 KB), with a boot probe (our own appletOE session,
+  converted) that leaves am alone if ids run past half of it; am's pointer
+  buffer is 0. Not covered: the HOME menu (qlaunch opens appletAE at boot,
+  before us).
+- **The viewer says why there is no picture:** after each idle probe the
+  console sends a status packet (flags AUDIO|STATUS, rate 0 - viewers before
+  v0.7.10 drop it) with a reason and two lines of text: no game, not on
+  screen, a manual/news/eShop open, turned off, excluded, untested firmware,
+  engine stalled, no memory, picture not found.
+- **A/B on hardware (same spots, handheld 720p):** Smash 50.5 fps (game 55.4)
+  vs v0.7.9's 40.5 (44.9), read+flush 5.0 vs 6.0 ms; MK8 56.8 (59.4) vs 53.3
+  (55.9), 3.6 vs 3.8 ms - no regression (the read varies with the scene).
+- **Also:** sm is held only while needed (SmUse, detach before the last
+  close); a failed donor setup retries every 5 s instead of ending streaming
+  for the boot; the manager's setup check lists the memory helper.
 
 ## *** v0.7.9: the game's crop decides; display-mapped regions; cheats via dmnt:cht ***
 

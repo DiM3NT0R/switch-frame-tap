@@ -1,4 +1,5 @@
 #include "applet_mitm_audio.hpp"
+#include "applet_mitm_sm.hpp"
 #include "applet_mitm_log.hpp"
 
 namespace ams::mitm::applet {
@@ -65,6 +66,7 @@ namespace ams::mitm::applet {
                     continue;
                 }
                 if (!open) {
+                    SmUse sm_grc;
                     const ::Result rc = smGetService(&srv, "grc:d");
                     if (R_FAILED(rc)) {
                         g_audio_state.store(2, std::memory_order_relaxed);

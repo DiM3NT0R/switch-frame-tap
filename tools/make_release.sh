@@ -17,6 +17,8 @@ STAGE="$OUT/stage-switch"
 
 echo "== sysmodule"
 MAKEFLAGS=-j8 bash "$REPO/tier4/applet-mitm/build.sh" >/dev/null
+echo "== memory donor"
+docker run --rm -u "$(id -u):$(id -g)" -v "$REPO":/w -w /w/tier4/donor "$IMG" bash -lc 'make' >/dev/null
 echo "== overlay and manager"
 for d in overlay manager; do
     docker run --rm -u "$(id -u):$(id -g)" -v "$REPO":/w -w "/w/$d" "$IMG" bash -lc 'make -j8' >/dev/null
@@ -34,6 +36,10 @@ cat > "$STAGE/atmosphere/contents/0100000000000C20/toolbox.json" <<JSON
     "requires_reboot": true
 }
 JSON
+# v0.7.10: the memory donor - no boot2 flag; the sysmodule launches it while a
+# viewer is connected (tier4/donor/source/main.c)
+mkdir -p "$STAGE/atmosphere/contents/0100000000000C21"
+cp "$REPO/tier4/donor/sft-donor.nsp" "$STAGE/atmosphere/contents/0100000000000C21/exefs.nsp"
 cp "$REPO/overlay/switch-frame-tap.ovl" "$STAGE/switch/.overlays/"
 cp "$REPO/manager/switch-frame-tap.nro" "$STAGE/switch/switch-frame-tap/"
 # v0.7.4: dvr-patches (exelix11, BSD-3), bundled OFF: here Atmosphere does not

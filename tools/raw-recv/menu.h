@@ -87,6 +87,7 @@ static int key_cap(SDL_Renderer *ren, const char *k, int x, int y)
 
 static const char *rec_dir_for_menu(void);
 static const char *net_peer_for_menu(void);
+static int status_for_menu(char *head, size_t hn, char *detail, size_t dn, uint32_t *reason);
 
 static void menu_draw(SDL_Renderer *ren)
 {
@@ -162,6 +163,17 @@ static void menu_draw(SDL_Renderer *ren)
         l1 = "Start a game on the Switch and the picture appears here.";
         l2 = "Nothing? Check that streaming is on in the overlay or the manager app.";
         break;
+    }
+    /* v0.7.10: connected, no picture - the console says why */
+    char st_head[64], st_detail[120];
+    uint32_t st_reason = 0;
+    if ((g_menu_state == MENU_CONNECTED || g_menu_state == MENU_PAUSED) &&
+        status_for_menu(st_head, sizeof(st_head), st_detail, sizeof(st_detail), &st_reason)) {
+        head = st_head;
+        l1 = st_detail;
+        l2 = "";
+        /* no game / not on screen / starting: normal; anything else is a stop */
+        hc = (st_reason == 1 || st_reason == 2 || st_reason == 10) ? good : warn;
     }
     text_draw(ren, head, 640, 170, 32, 1, hc, 1);
     text_draw(ren, l1, 640, 220, 22, 0, dim, 1);

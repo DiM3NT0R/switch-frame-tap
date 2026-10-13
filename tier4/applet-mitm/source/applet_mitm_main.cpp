@@ -13,6 +13,9 @@
 #include <cstdio>
 #include <cstring>
 #include "applet_mitm_service.hpp"
+#include "applet_mitm_sm.hpp"
+#include "applet_mitm_donor.hpp"
+#include "applet_mitm_am.hpp"
 #include "applet_mitm_log.hpp"
 #include "applet_mitm_nv.hpp"
 #include "applet_mitm_nvdrv.hpp"
@@ -97,6 +100,12 @@ namespace ams {
         constexpr size_t NvMaxSessions = 16;
         constexpr size_t NvThreads     = 4;
 
+        /* v0.7.10: the grc IPC interceptor (M72-M76 research, never armed in
+         * a release) cost 1.4 MB of .bss - a 1 MB server manager, 128 KB of
+         * stacks, NvDrvMitm's 256 KB record - in the Applet pool the browser
+         * applets need nearly all of (2210-1024). Built only with
+         * SFT_GRC_RESEARCH=1. */
+#if SFT_GRC_RESEARCH
         /* M72b: a mitm session's pointer buffer must be at least as large as the
          * real service's (sf_hipc_server_session_manager.cpp:148 aborts
          * otherwise). M72 reused vi:u's 0x1000, and the first grc session
@@ -124,9 +133,26 @@ namespace ams {
 
         void NvLoopThread(void *) { g_nv_server_manager.LoopProcess(); }
 
+#endif
+
         /* Registered before anything else in main: mitm.lst has boot2 declare
          * this mitm in advance, so every nvdrv:s client in the system is waiting
          * on us until this returns. */
+#if !SFT_GRC_RESEARCH
+        /* Release builds: nothing to register. A mitm.lst left on the card
+         * (M72-M75 test builds) still has boot2 declare a future nvdrv:s mitm,
+         * and every nvdrv:s client - vi among them - would wait on us forever:
+         * withdraw the declaration and delete the file. */
+        void StartGrcRecorder() {
+            constexpr const char *Lst = "sdmc:/atmosphere/contents/0100000000000C20/mitm.lst";
+            fs::DirectoryEntryType t;
+            if (mitm::applet::g_grc_armed) { mitm::applet::LogLine("grc IPC interceptor: armed, but not in this build (SFT_GRC_RESEARCH)"); }
+            if (R_FAILED(fs::GetEntryType(std::addressof(t), Lst))) { mitm::applet::LogLine("grc IPC interceptor: off"); return; }
+            const Result crc = sm::mitm::ClearFutureMitm(NvdrvMitmServiceName);
+            const Result drc = fs::DeleteFile(Lst);
+            mitm::applet::LogLine("grc IPC interceptor: off - stale mitm.lst found: future nvdrv:s mitm cleared rc=0x%x, file deleted rc=0x%x", crc.GetValue(), drc.GetValue());
+        }
+#else
         void StartGrcRecorder() {
             /* M73: opt-in. M72 registered this unconditionally, which meant
              * every run carried the recorder's risk even when the run had
@@ -176,6 +202,8 @@ namespace ams {
             }
         }
 
+#endif
+
         /* ---- liveness heartbeat -------------------------------------------
          * Two runs in a row went silent after "registered mitm server", with
          * the system wedging on vi. That is ambiguous: the process may have
@@ -194,7 +222,7 @@ namespace ams {
          * transfer memories and sessions, every 250 ms, logged when one moves.
          * SooraMaru: the web applet crashes with the module installed even
          * with 4 MB held; the line before the crash names the limit. */
-        void LogAppletLimits() {
+        void LogAppletLimits(const char *tag = nullptr) {
             if (mitm::applet::g_pmdmnt_rc != 0) { return; }
             static s64 last[5] = { -1, -1, -1, -1, -1 };
             static const svc::LimitableResource res[5] = {
@@ -208,7 +236,8 @@ namespace ams {
                 const s64 v = k == 0 ? static_cast<s64>(cur[k] >> 20) : static_cast<s64>(cur[k]);   /* memory in MB */
                 if (v != last[k]) { moved = true; last[k] = v; }
             }
-            if (!moved) { return; }
+            if (!moved && tag == nullptr) { return; }
+            if (tag != nullptr) { mitm::applet::LogLine("applet group @ %s:", tag); }
             mitm::applet::LogLine("applet group: memory %llu/%llu MB, threads %llu/%llu, events %llu/%llu, transfer memories %llu/%llu, sessions %llu/%llu",
                                   static_cast<unsigned long long>(cur[0] >> 20), static_cast<unsigned long long>(lim[0] >> 20),
                                   static_cast<unsigned long long>(cur[1]), static_cast<unsigned long long>(lim[1]),
@@ -709,6 +738,7 @@ namespace ams {
             }
         }
 
+#if SFT_GRC_RESEARCH
         Result NvServerManager::OnNeedsToAccept(int port_index, Server *server) {
             std::shared_ptr<::Service> fsrv;
             sm::MitmProcessInfo client_info;
@@ -723,6 +753,7 @@ namespace ams {
                 sf::CreateSharedObjectEmplaced<mitm::applet::INvDrvMitm, mitm::applet::NvDrvMitm>(decltype(fsrv)(fsrv), client_info),
                 fsrv));
         }
+#endif
 
     }
 
@@ -759,6 +790,7 @@ namespace ams {
         os::SetThreadNamePointer(os::GetCurrentThread(), "applet-mitm.Main");
 
         mitm::applet::LogInit();
+        LogAppletLimits("main start");
 
         /* M72: first thing, before any other work. With mitm.lst present every
          * nvdrv:s client - vi among them - is blocked until this registers. The
@@ -770,7 +802,7 @@ namespace ams {
         /* M76: this line used to print jpg=off before jpg was parsed, and
          * called every build a "read-only observer". The flag dump below is
          * the record of what this boot armed. */
-        mitm::applet::LogLine("applet-mitm v0.7.10-test: up (grc IPC interceptor %s)",
+        mitm::applet::LogLine("applet-mitm v0.7.10: up (grc IPC interceptor %s)",
                               mitm::applet::g_grc_armed ? "ARMED" : "off");
         {
             const auto api = exosphere::GetApiInfo();
@@ -908,6 +940,7 @@ namespace ams {
         mitm::applet::StartAudio();
         mitm::applet::StartNet();         /* v0.7: only with "net"; waits for the console to be online */       /* idle, and grc:d untouched, until audio is on */
         mitm::applet::StartVicWorker();
+        mitm::applet::StartAppletWatch();   /* v0.7.10: an applet starting while we stream */
         /* M76: its own thread, so an mm:u or clkrst call that blocks can never
          * hold up vi:u registration below. Holds the clocks past the survey
          * only when an engine probe in this run needs them. */
@@ -933,6 +966,9 @@ namespace ams {
         }
         SFT_ABORT_UNLESS(g_server_manager.RegisterMitmServer<mitm::applet::ViRootMitm>(PortIndex_AppletMitm, AppletMitmServiceName));
         mitm::applet::LogLine("registered mitm server for vi:u");
+        /* v0.7.10: the game's am, so a browser applet stops the stream first;
+         * "noam" in config/arm leaves am alone (escape hatch) */
+        if (ArmFileContains("noam")) { mitm::applet::LogLine("am: not wrapped (noam)"); } else { mitm::applet::StartAmMitm(); }
         /* v0.1.1: after vi:u, and wrapping only the running application's own
          * sessions (ShouldMitm asks pm:dmnt) */
         /* v0.7.1: "nohb" (config homebrew = 0, not in the manager) leaves vi:m
@@ -956,6 +992,15 @@ namespace ams {
             }
             mitm::applet::LogLine("vi server: %zu threads, %zu sessions", ViThreads, MaxSessions);
         }
+        /* v0.7.10: drop the boot reference to sm (sm::Initialize). Our own sm
+         * connection is charged to the Applet group and cost the applets one
+         * of their 6 sessions - the web applet's (2210-1024). Every later use
+         * holds it only while needed (SmUse, applet_mitm_sm.hpp). */
+        {
+            const Result src = mitm::applet::SmReleaseBoot();
+            mitm::applet::LogLine("sm: boot session detached (rc=0x%x) and released - sm is now opened only while a service is fetched", src.GetValue());
+        }
+        LogAppletLimits("after sm released");
         mitm::applet::LogMark("main:LoopProcess");
         g_server_manager.LoopProcess();
         mitm::applet::LogMark("main:LoopProcess_RETURNED");
@@ -1004,6 +1049,57 @@ namespace ams::mitm::applet {
 
     void UsbCancelIn();
 
+    namespace {
+        constinit std::atomic<u32> g_viewer_reason{0};
+
+        bool UsbPostWait(void *buf, u32 size, u32 timeout_ms) {
+            u32 urb = 0;
+            if (R_FAILED(usbDsEndpoint_PostBufferAsync(::ams::g_usb_ep_in, buf, size, std::addressof(urb)))) { return false; }
+            if (R_FAILED(eventWait(std::addressof(::ams::g_usb_ep_in->CompletionEvent), static_cast<u64>(timeout_ms) * 1000000))) {
+                UsbCancelIn();
+                return false;
+            }
+            eventClear(std::addressof(::ams::g_usb_ep_in->CompletionEvent));
+            return true;
+        }
+
+        /* The status packet: a header flagged audio + status (16) with rate 0
+         * and 0 channels - viewers before v0.7.10 drop audio that is not
+         * 48 kHz stereo - then the reason and two lines of text, each its own
+         * transfer as the video's header and payload are. */
+        void UsbSendStatus(u32 reason) {
+            struct Status { u32 version; u32 reason; char head[64]; char detail[120]; };
+            static_assert(sizeof(Status) == 192);
+            static const char *const text[][2] = {
+                { "", "" },
+                { "Connected - no game is running", "Start a game and the picture appears here." },
+                { "Connected - the game is not on screen", "The HOME menu and system screens can't be streamed. Go back to the game." },
+                { "Paused - a manual, news or the eShop is open", "The stream comes back a few seconds after you close it." },
+                { "Streaming is turned off", "Turn it on in the Switch Frame Tap overlay or manager app." },
+                { "This app is excluded from streaming", "Remove it from the excluded apps in the manager app." },
+                { "This firmware is untested", "Set allow_untested_firmware = 1 in config.ini to stream anyway." },
+                { "The video engine stopped responding", "Restart the console to stream again." },
+                { "Not enough memory to stream right now", "It tries again every few seconds." },
+                { "This game's picture was not found", "Restart the game. If it keeps happening, please send the log." },
+                { "Starting the stream...", "" },
+            };
+            if (reason >= sizeof(text) / sizeof(text[0])) { return; }
+            alignas(0x1000) static u8 hdr_buf[0x1000];
+            alignas(0x1000) static u8 body_buf[0x1000];
+            const u32 h[8] = { 0x52544653u, 2u | ((8u | 16u) << 16), 0, 0, 0, static_cast<u32>(sizeof(Status)), 0, 0 };
+            std::memcpy(hdr_buf, h, sizeof(h));
+            Status st = {};
+            st.version = 1;
+            st.reason = reason;
+            std::snprintf(st.head, sizeof(st.head), "%s", text[reason][0]);
+            std::snprintf(st.detail, sizeof(st.detail), "%s", text[reason][1]);
+            std::memcpy(body_buf, std::addressof(st), sizeof(st));
+            if (UsbPostWait(hdr_buf, sizeof(h), 300)) { static_cast<void>(UsbPostWait(body_buf, sizeof(st), 300)); }
+        }
+    }
+
+    void SetViewerReason(ViewerReason r) { g_viewer_reason.store(r, std::memory_order_relaxed); }
+
     bool UsbViewerPresent(u32 timeout_ms) {
         /* v0.7: a viewer connected over the network counts, and goes first */
         if (NetClientPresent()) { return true; }
@@ -1031,7 +1127,9 @@ namespace ams::mitm::applet {
         u32 transferred = 0;
         if (R_FAILED(usbDsEndpoint_GetReportData(::ams::g_usb_ep_in, std::addressof(report)))) { return false; }
         if (R_FAILED(usbDsParseReportData(std::addressof(report), urb, nullptr, std::addressof(transferred)))) { return false; }
-        return transferred == sizeof(h);
+        if (transferred != sizeof(h)) { return false; }
+        if (const u32 r = g_viewer_reason.load(std::memory_order_relaxed); r != ViewerReason_None) { UsbSendStatus(r); }
+        return true;
     }
 
     bool UsbReady() {

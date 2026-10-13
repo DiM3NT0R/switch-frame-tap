@@ -8,7 +8,7 @@
     "default_cpu_id": 3,
     "process_category": 0,
     "is_retail": true,
-    "pool_partition": 1,
+    "pool_partition": 2,
     "is_64_bit": true,
     "address_space_type": 3,
     "disable_device_address_space_merge": true,
@@ -36,14 +36,17 @@
         "grc:d",
         "bsd:u",
         "nifm:u",
-        "sftap:s"
+        "sftap:s",
+        "pm:shell",
+        "appletOE"
     ],
     "service_host": [
         "vi:u",
         "vi:m",
         "nvdrv:s",
         "sftap",
-        "sftap:s"
+        "sftap:s",
+        "appletOE"
     ],
     "kernel_capabilities": [
         {
@@ -123,12 +126,14 @@
                 "svcReadDebugProcessMemory": "0x6a",
                 "svcGetDebugThreadParam": "0x6d",
                 "svcGetSystemInfo": "0x6f",
-                "svcCallSecureMonitor": "0x7F"
+                "svcCallSecureMonitor": "0x7F",
+                "svcMapTransferMemory": "0x51",
+                "svcUnmapTransferMemory": "0x52"
             }
         },
         {
             "type": "application_type",
-            "value": 2
+            "value": 0
         },
         {
             "type": "min_kernel_version",

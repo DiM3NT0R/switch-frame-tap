@@ -54,6 +54,8 @@ namespace ams::mitm::applet {
     AMS_SF_METHOD_INFO(C, H, 0, Result, GetStatus,  (sf::Out<ams::mitm::applet::StreamStatus> out), (out)) \
     AMS_SF_METHOD_INFO(C, H, 1, Result, SetEnabled, (u8 on), (on)) \
     AMS_SF_METHOD_INFO(C, H, 2, Result, ReloadConfig, (), ()) \
-    AMS_SF_METHOD_INFO(C, H, 3, Result, SetAppExcluded, (u64 program_id, u8 excluded), (program_id, excluded))
+    AMS_SF_METHOD_INFO(C, H, 3, Result, SetAppExcluded, (u64 program_id, u8 excluded), (program_id, excluded)) \
+    AMS_SF_METHOD_INFO(C, H, 10, Result, Donate, (u64 size, sf::CopyHandle &&tmem), (size, std::move(tmem))) \
+    AMS_SF_METHOD_INFO(C, H, 11, Result, DonateFailed, (u32 rc), (rc))
 
 AMS_SF_DEFINE_INTERFACE(ams::mitm::applet, IStreamControl, AMS_SFTAP_CONTROL_INTERFACE_INFO, 0x5F7A4001)

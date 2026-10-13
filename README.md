@@ -140,7 +140,7 @@ Nothing else: no other sysmodule, no sigpatches, no capture card.
 This drives hardware engines directly; a bug can freeze the console (see
 [If something goes wrong](#if-something-goes-wrong)).
 
-**1. The Switch.** Download `switch-frame-tap-0.7.9-switch.zip` from the
+**1. The Switch.** Download `switch-frame-tap-0.7.10-switch.zip` from the
 [release](https://github.com/TomasUribe/switch-frame-tap/releases) and unzip
 it onto the root of the SD card (card reader or Hekate USB mass storage). It
 contains:
@@ -154,7 +154,7 @@ switch/.overlays/switch-frame-tap.ovl         the overlay (Tesla / Ultrahand)
 Reboot. Updating later is the same: unzip over it; your settings are kept.
 
 **2a. The PC viewer on Windows.** Unzip
-`switch-frame-tap-0.7.9-windows-viewer.zip` anywhere. Once, with the Switch
+`switch-frame-tap-0.7.10-windows-viewer.zip` anywhere. Once, with the Switch
 connected and running: open [Zadig](https://zadig.akeo.ie/), **Options ->
 List All Devices**, pick **Switch Frame Tap** (USB ID 1209 5F1E - make sure
 it is that one), choose **WinUSB** and **Install Driver**. Then double-click
@@ -173,7 +173,7 @@ bash tools/raw-recv/install-launcher.sh
 
 That puts a double-clickable **Switch Frame Tap** on the desktop and in the
 applications menu. The release also has
-`switch-frame-tap-0.7.9-linux-viewer.tar.gz` with the same files.
+`switch-frame-tap-0.7.10-linux-viewer.tar.gz` with the same files.
 
 On both, the viewer opens a window that says what it is waiting for (the
 Switch, its USB driver, or a game) and lists its keys; the same screen comes
@@ -406,7 +406,7 @@ Please attach both to a bug report.
 ```bash
 git clone --recursive https://github.com/Atmosphere-NX/Atmosphere ref/Atmosphere
 git clone https://github.com/WerWolv/libtesla ref/libtesla
-bash tools/make_release.sh 0.7.9       # -> dist/switch-frame-tap-0.7.9-{switch.zip,linux-viewer.tar.gz,windows-viewer.zip}
+bash tools/make_release.sh 0.7.10      # -> dist/switch-frame-tap-0.7.10-{switch.zip,linux-viewer.tar.gz,windows-viewer.zip}
 bash tools/run_pc_tests.sh             # every check that needs no console
 ```
 
@@ -464,6 +464,12 @@ to `sdmc:/applet-mitm.log` - how every development run was done.
   of "High" (near-lossless) at 1080p60. USB has room for it; a bitrate cap
   (the console's own rate control) comes with the network transport, where it
   is needed.
+- **Game manuals, news and the eShop** (the browser applets) need nearly all
+  of the console's applet memory. Since v0.7.10 Switch Frame Tap holds none
+  of it while you are not streaming, and when a game opens its manual or
+  news while you stream, the stream pauses first and comes back when you
+  close it. Opened **from the HOME menu while streaming**, they still crash
+  (2210-1024): disconnect the viewer first.
 - **One console tested.** Mariko, firmware 22.5.0, Atmosphère 1.11.2.
 
 ## If something goes wrong
@@ -684,6 +690,7 @@ dock works over the network since v0.7.0, with the quality adapting to the link.
 | path | what |
 |---|---|
 | `tier4/applet-mitm/` | The sysmodule: `vi:u` / `vi:m` mitm, binder intercept, debug-SVC capture and event pump, VIC and NVENC over raw nvdrv, USB (the viewer's bulk transport, or a UVC camera) or the network (TCP, `applet_mitm_net.cpp`), game audio (grc:d), screenshots, the `sftap` control service. |
+| `tier4/donor/` | `sft-donor` (v0.7.10), the memory donor: started by the sysmodule only while a viewer is connected, it lends the streaming memory from the applet pool and gives it back when streaming stops, so the console's browser applets (manuals, news, eShop) keep their memory. |
 | `tools/raw-recv/` | `raw-view`, the PC viewer (Linux, and Windows via `build-windows.sh`), and `install-launcher.sh`, its Linux desktop app; `record.h` (MP4 recording) and `menu.h` (the main screen, with a built-in DejaVu font from `gen_font.py`); `uvc-check`, the webcam-mode tester; `mp4-check`, `mp4-frames` and `h264-stats` (checking a recording, frames for the docs, the encoder's efficiency: frame sizes, coded QP, motion vectors) (and `raw-recv`, the raw-frame receiver it grew out of). |
 | `manager/` | The manager app for the homebrew menu (SDL2): settings, status, setup check, screenshot gallery. |
 | `overlay/` | The Tesla/Ultrahand overlay: stream on/off, status, handheld/docked through ReverseNX-RT. |
