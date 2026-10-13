@@ -23,7 +23,9 @@ jobs:
       - name: Dependencies
         run: brew install libusb pkg-config nasm cmake
       - name: Build
-        run: bash tools/raw-recv/build-macos.sh "${GITHUB_REF_NAME#v}"
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          bash tools/raw-recv/build-macos.sh "${v//\//-}"
       - uses: actions/upload-artifact@v4
         with:
           name: viewer-macos-${{ matrix.runner }}
