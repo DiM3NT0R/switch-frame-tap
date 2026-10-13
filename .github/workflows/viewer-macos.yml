@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Dependencies
-        run: brew install sdl2 libusb pkg-config nasm
+        run: brew install libusb pkg-config nasm cmake
       - name: Build
         run: bash tools/raw-recv/build-macos.sh "${GITHUB_REF_NAME#v}"
       - uses: actions/upload-artifact@v4

@@ -3,14 +3,15 @@
 # Mac or by .github/workflows/viewer-macos.yml on GitHub's macOS runners.
 #
 # Built in: FFmpeg 8.1 with only what the viewer uses (H.264 decoder, AAC
-# encoder, MP4 muxer, as for Windows and Linux), SDL 2 and libusb (Homebrew's
-# static libraries). It then needs only macOS's own frameworks - no Homebrew
+# encoder, MP4 muxer, as for Windows and Linux), SDL 2 (built here) and libusb
+# (Homebrew's static library). It then needs only macOS's own frameworks - no Homebrew
 # on the user's Mac. Thanks to proconsule54 (the first macOS build) and
 # DiM3NT0R (macOS fixes, PR #12).
 #
-# Needs: Xcode command line tools, Homebrew: brew install sdl2 libusb pkg-config
-# (nasm too on Intel). Downloads ffmpeg-8.1.tar.xz from ffmpeg.org if ref/
-# does not have it.
+# Needs: Xcode command line tools, Homebrew: brew install libusb pkg-config cmake
+# (nasm too on Intel). Downloads ffmpeg-8.1.tar.xz (ffmpeg.org) and
+# SDL2-2.32.10.tar.gz (github.com/libsdl-org) if ref/ does not have them -
+# Homebrew's sdl2 is now sdl2-compat (on SDL 3), with no static library.
 #
 #   bash tools/raw-recv/build-macos.sh 0.7.11
 #     -> dist/switch-frame-tap-0.7.11-macos-<arm64|x86_64>.zip
@@ -44,9 +45,22 @@ if [ ! -f "$FF/lib/libavcodec.a" ]; then
     cp ../COPYING.LGPLv2.1 "$FF/"
 fi
 
+# ---- SDL 2, static
+SDLV=2.32.10
+SDLP="$M/sdl2"
+if [ ! -f "$SDLP/lib/libSDL2.a" ]; then
+    echo "== SDL $SDLV (static, $ARCH)"
+    [ -f "$REPO/ref/SDL2-$SDLV.tar.gz" ] || curl -sSfL -o "$REPO/ref/SDL2-$SDLV.tar.gz" "https://github.com/libsdl-org/SDL/releases/download/release-$SDLV/SDL2-$SDLV.tar.gz"
+    rm -rf "$M/SDL2-$SDLV"; tar -xzf "$REPO/ref/SDL2-$SDLV.tar.gz" -C "$M"
+    cmake -S "$M/SDL2-$SDLV" -B "$M/SDL2-$SDLV/build" -DCMAKE_BUILD_TYPE=Release \
+        -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST=OFF -DCMAKE_INSTALL_PREFIX="$SDLP" > "$M/sdl-cmake.log" 2>&1 || { tail -30 "$M/sdl-cmake.log"; exit 1; }
+    cmake --build "$M/SDL2-$SDLV/build" -j"$(sysctl -n hw.ncpu)" > "$M/sdl-build.log" 2>&1 || { tail -40 "$M/sdl-build.log"; exit 1; }
+    cmake --install "$M/SDL2-$SDLV/build" > /dev/null
+    cp "$M/SDL2-$SDLV/LICENSE.txt" "$SDLP/"
+fi
+
 # ---- the viewer, statically linked against SDL 2 and libusb
 echo "== raw-view ($ARCH)"
-SDLP=$(brew --prefix sdl2)
 USBP=$(brew --prefix libusb)
 OUT="$REPO/dist/build-macos-$ARCH"
 rm -rf "$OUT"; mkdir -p "$OUT"
@@ -97,7 +111,7 @@ PLIST
 mkdir -p "$OUT/licenses"
 cp "$REPO/LICENSE" "$OUT/licenses/switch-frame-tap-GPL-2.0.txt"
 cp "$FF/COPYING.LGPLv2.1" "$OUT/licenses/FFmpeg-LGPL-2.1.txt"
-cp "$SDLP/share/licenses/sdl2/LICENSE.txt" "$OUT/licenses/SDL2-zlib.txt" 2>/dev/null || true
+cp "$SDLP/LICENSE.txt" "$OUT/licenses/SDL2-zlib.txt"
 cp "$USBP/COPYING" "$OUT/licenses/libusb-LGPL-2.1.txt" 2>/dev/null || true
 cat > "$OUT/README.txt" <<TXT
 Switch Frame Tap $VER - the viewer for macOS ($ARCH, macOS ${MINOS:-11.0} or newer)
