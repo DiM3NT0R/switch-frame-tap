@@ -173,6 +173,14 @@ int main() {
     ExpectRelease("# grc dump nvp\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio");
     /* default on; only detach_on_home=0 emits nodethome */
     ExpectRelease("detach_on_home = 0\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio nodethome");
+    /* v0.7.11: screenshots next to the system's */
+    ExpectRelease("screenshot = 1\nscreenshot_location = album\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 shot shotkey=0 shotalbum audio");
+    ExpectRelease("screenshot = 1\nscreenshot_location = app\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 shot shotkey=0 audio");
+    /* v0.7.11: custom combos (ZR = bit 9 = 512, Down = bit 15 = 32768) */
+    ExpectRelease("screenshot = 1\nscreenshot_buttons = 4\nscreenshot_custom = ZR+Down+Capture\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 shot shotkey=4 shotmask=33280 shotcap audio");
+    ExpectRelease("screenshot = 1\nscreenshot_buttons = 4\nscreenshot_custom = zr + down\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 shot shotkey=4 shotmask=33280 audio");
+    ExpectRelease("screenshot = 1\nscreenshot_buttons = 4\nscreenshot_custom = Capture\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 shot shotkey=4 shotmask=0 shotcap audio");
+    ExpectRelease("screenshot = 1\nscreenshot_buttons = 4\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 shot shotkey=0 audio");
     ExpectRelease("detach_on_home = 1\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio");
     ExpectContains("vic live nodethome wait=20\n", "nodethome", true);
     ExpectContains("vic live wait=20\n", "nodethome", false);

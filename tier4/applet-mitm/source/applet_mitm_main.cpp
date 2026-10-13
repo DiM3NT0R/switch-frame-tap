@@ -375,7 +375,10 @@ namespace ams {
             mitm::applet::g_cap720_armed  = mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "cap720");
             mitm::applet::g_anyfw_armed   = mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "anyfw");
             mitm::applet::g_shot_enabled.store(mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "shot"));
-            mitm::applet::g_shot_combo.store(mitm::applet::armfile::Number(g_arm_buf, g_arm_len, "shotkey", 0) & 3);
+            mitm::applet::g_shot_combo.store(std::min(mitm::applet::armfile::Number(g_arm_buf, g_arm_len, "shotkey", 0), 4u));
+            mitm::applet::g_shot_mask.store(mitm::applet::armfile::Number(g_arm_buf, g_arm_len, "shotmask", 0) & sft::shotbuttons::AllButtons);
+            mitm::applet::g_shot_capture.store(mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "shotcap"));
+            mitm::applet::g_shot_album.store(mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "shotalbum"));
             mitm::applet::g_audio_enabled.store(mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "audio"));
             mitm::applet::g_nvab_armed = mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "nvab");
             /* on unless config sets detach_on_home=0 (nodethome) */
@@ -804,7 +807,7 @@ namespace ams {
         /* M76: this line used to print jpg=off before jpg was parsed, and
          * called every build a "read-only observer". The flag dump below is
          * the record of what this boot armed. */
-        mitm::applet::LogLine("applet-mitm v0.7.11-test2: up (grc IPC interceptor %s), built against Atmosphere %d.%d.%d",
+        mitm::applet::LogLine("applet-mitm v0.7.11-test4: up (grc IPC interceptor %s), built against Atmosphere %d.%d.%d",
                               mitm::applet::g_grc_armed ? "ARMED" : "off",
                               ATMOSPHERE_RELEASE_VERSION_MAJOR, ATMOSPHERE_RELEASE_VERSION_MINOR, ATMOSPHERE_RELEASE_VERSION_MICRO);
         {
@@ -851,7 +854,11 @@ namespace ams {
         mitm::applet::g_cap720_armed  = ArmFileContains("cap720");
         mitm::applet::g_anyfw_armed   = ArmFileContains("anyfw");
         mitm::applet::g_shot_enabled.store(ArmFileContains("shot"));
-        mitm::applet::g_shot_combo.store(ArmFileNumber("shotkey", 0) & 3);
+        mitm::applet::g_shot_combo.store(std::min(ArmFileNumber("shotkey", 0), 4u));
+        mitm::applet::g_shot_mask.store(ArmFileNumber("shotmask", 0) & sft::shotbuttons::AllButtons);
+        mitm::applet::g_shot_capture.store(ArmFileContains("shotcap"));
+        mitm::applet::g_shot_album.store(ArmFileContains("shotalbum"));
+        mitm::applet::NoteAlbumPath();   /* v0.7.11: for the manager's gallery */
         mitm::applet::g_audio_enabled.store(ArmFileContains("audio"));
         mitm::applet::LogLine("install type from GetEntryType(sdmc:/applet-mitm.armed) rc=0x%x", mitm::applet::g_arm_probe_rc);
         mitm::applet::LogLine("%s: %.*s", mitm::applet::g_release_mode ? "release install, sdmc:/config/switch-frame-tap/config.ini ->" : "TEST install, sdmc:/applet-mitm.armed",

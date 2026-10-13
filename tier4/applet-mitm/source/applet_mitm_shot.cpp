@@ -3,11 +3,15 @@
 #include "applet_mitm_sm.hpp"
 #include "applet_mitm_log.hpp"
 #include <cstdio>
+#include "shot_buttons.hpp"
 
 namespace ams::mitm::applet {
 
     constinit std::atomic<bool> g_shot_enabled{false};
     constinit std::atomic<u32>  g_shot_combo{0};
+    constinit std::atomic<u32>  g_shot_mask{0};
+    constinit std::atomic<bool> g_shot_capture{false};
+    constinit std::atomic<bool> g_shot_album{false};
     constinit std::atomic<u32>  g_shot_count{0}, g_shot_fail{0};
 
     namespace {
@@ -18,6 +22,7 @@ namespace ams::mitm::applet {
 
         u64 ComboMask(u32 combo) {
             switch (combo) {
+                case 4:  return g_shot_mask.load(std::memory_order_relaxed);
                 case 1:  return HidNpadButton_L | HidNpadButton_R | HidNpadButton_Down;
                 case 2:  return HidNpadButton_ZL | HidNpadButton_ZR | HidNpadButton_Down;
                 case 3:  return HidNpadButton_Minus | HidNpadButton_Down;
@@ -25,12 +30,41 @@ namespace ams::mitm::applet {
             }
         }
 
+        /* v0.7.11: the Capture button is not an Npad button; hid keeps its own
+         * state in the same shared memory (read only - no hid:sys call: M99b's
+         * EnableAppletToGetInput crashed the HOME menu's controller settings) */
+        struct CaptureReader {
+            u64 last_sampling = 0;
+            bool said_live = false, said_dead = false;
+            u64 t0 = 0;
+            bool Held() {
+                const auto *shm = static_cast<const HidSharedMemory *>(hidGetSharedmemAddr());
+                if (shm == nullptr) { return false; }
+                const HidCaptureButtonLifo &lifo = shm->capture_button.lifo;
+                const u64 tail = lifo.header.tail;
+                if (tail >= 17) { return false; }
+                const HidCaptureButtonState st = lifo.storage[tail].state;
+                if (t0 == 0) { t0 = armTicksToNs(armGetSystemTick()); last_sampling = st.sampling_number; }
+                if (st.sampling_number != last_sampling && !said_live) {
+                    said_live = true;
+                    LogLine("shot: the Capture button is readable");
+                }
+                if (!said_live && !said_dead && armTicksToNs(armGetSystemTick()) - t0 > UINT64_C(60000000000)) {
+                    said_dead = true;
+                    LogLine("shot: the Capture button's state never changed in 60 s - a combo with Capture may not work on this console");
+                }
+                last_sampling = st.sampling_number;
+                return st.buttons != 0;
+            }
+        };
+
                alignas(os::ThreadStackAlignment) constinit u8 g_input_stack[16_KB];
         constinit os::ThreadType g_input_thread;
 
         void InputThread(void *) {
             bool ready = false, prev = false, time_ok = false;
             PadState pad;
+            CaptureReader capture;
             for (;;) {
                 if (!g_shot_enabled.load(std::memory_order_relaxed)) {
                     prev = false;
@@ -58,18 +92,67 @@ namespace ams::mitm::applet {
                     ready = true;
                 }
                 padUpdate(&pad);
-                const u64 mask = ComboMask(g_shot_combo.load(std::memory_order_relaxed));
-                const bool now = (padGetButtons(&pad) & mask) == mask;
+                const u32 combo = g_shot_combo.load(std::memory_order_relaxed);
+                const u64 mask = ComboMask(combo);
+                const bool want_capture = combo == 4 && g_shot_capture.load(std::memory_order_relaxed);
+                const bool cap_held = (want_capture || combo == 4) ? capture.Held() : false;
+                const bool now = (mask != 0 || want_capture) && (padGetButtons(&pad) & mask) == mask && (!want_capture || cap_held);
                 if (now && !prev) {
                     g_shot_request_tick.store(armGetSystemTick(), std::memory_order_relaxed);
-                    LogLine("shot: combo %u pressed", g_shot_combo.load(std::memory_order_relaxed));
+                    LogLine("shot: combo %u pressed", combo);
                 }
                 prev = now;
                 os::SleepThread(TimeSpan::FromMilliSeconds(25));
             }
         }
 
+        /* v0.7.11: where the system keeps its screenshots - sdmc:/Nintendo/Album,
+         * or under emuMMC the redirected Nintendo folder (emummc.ini
+         * nintendo_path, e.g. sdmc:/emuMMC/RAW1/Nintendo/Album) */
+        const char *AlbumRoot() {
+            static char root[0x100] = "";
+            if (root[0] == 0) {
+                const char *nd = ::ams::emummc::IsActive() ? ::ams::emummc::GetNintendoDirPath() : nullptr;
+                if (nd != nullptr && nd[0] != 0) {
+                    std::snprintf(root, sizeof(root), "sdmc:%s%s/Album", nd[0] == '/' ? "" : "/", nd);
+                } else {
+                    std::snprintf(root, sizeof(root), "sdmc:/Nintendo/Album");
+                }
+            }
+            return root;
+        }
+
+        /* Album/YYYY/MM/DD/YYYYMMDDHHMMSS00-SwitchFrameTap.png: the system's
+         * date folders and the start of its names, so a PC sorts them with the
+         * console's own screenshots; the Album app skips names it cannot
+         * parse (its own are 32 hex digits) and shows only its signed JPEGs */
+        bool MakeAlbumPath(char *out, size_t cap, const TimeCalendarTime &ct) {
+            char dir[0x140];
+            std::snprintf(dir, sizeof(dir), "%s", AlbumRoot());
+            static_cast<void>(fs::CreateDirectory(dir));
+            const size_t n = std::strlen(dir);
+            std::snprintf(dir + n, sizeof(dir) - n, "/%04u", ct.year);   static_cast<void>(fs::CreateDirectory(dir));
+            std::snprintf(dir + n + 5, sizeof(dir) - n - 5, "/%02u", ct.month); static_cast<void>(fs::CreateDirectory(dir));
+            std::snprintf(dir + n + 8, sizeof(dir) - n - 8, "/%02u", ct.day);   static_cast<void>(fs::CreateDirectory(dir));
+            fs::DirectoryEntryType t;
+            if (R_FAILED(fs::GetEntryType(std::addressof(t), dir))) { return false; }
+            for (u32 k = 0; k < 100; ++k) {
+                std::snprintf(out, cap, "%s/%04u%02u%02u%02u%02u%02u%02u-SwitchFrameTap.png", dir, ct.year, ct.month, ct.day, ct.hour, ct.minute, ct.second, k);
+                if (R_FAILED(fs::GetEntryType(std::addressof(t), out))) { return true; }
+            }
+            return false;
+        }
+
         void MakeShotPath(char *out, size_t cap) {
+            if (g_shot_album.load(std::memory_order_relaxed)) {
+                u64 posix = 0;
+                TimeCalendarTime ct = {};
+                if (R_SUCCEEDED(timeGetCurrentTime(TimeType_LocalSystemClock, &posix)) &&
+                    R_SUCCEEDED(timeToCalendarTimeWithMyRule(posix, &ct, nullptr)) && MakeAlbumPath(out, cap, ct)) {
+                    return;
+                }
+                LogLine("shot: the album folder is not usable - saving to %s instead", ShotDir);
+            }
             static_cast<void>(fs::CreateDirectory("sdmc:/switch"));
             static_cast<void>(fs::CreateDirectory("sdmc:/switch/switch-frame-tap"));
             static_cast<void>(fs::CreateDirectory(ShotDir));
@@ -197,6 +280,21 @@ namespace ams::mitm::applet {
             Notify(msg);
         }
         return true;
+    }
+
+    void NoteAlbumPath() {
+        constexpr const char *P = "sdmc:/config/switch-frame-tap/album_path.txt";
+        char line[0x110];
+        const int n = std::snprintf(line, sizeof(line), "%s\n", AlbumRoot());
+        if (n <= 0) { return; }
+        static_cast<void>(fs::DeleteFile(P));
+        if (R_FAILED(fs::CreateFile(P, n))) { return; }
+        fs::FileHandle f;
+        if (R_SUCCEEDED(fs::OpenFile(std::addressof(f), P, fs::OpenMode_Write))) {
+            static_cast<void>(fs::WriteFile(f, 0, line, n, fs::WriteOption::Flush));
+            fs::CloseFile(f);
+        }
+        LogLine("shot: the system's screenshots are in %s%s", AlbumRoot(), g_shot_album.load() ? " - saving there (screenshot_location = album)" : "");
     }
 
 }

@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstring>
 #include <cstdio>
+#include "shot_buttons.hpp"
 
 namespace ams::mitm::applet::armfile {
 
@@ -79,6 +80,10 @@ namespace ams::mitm::applet::armfile {
      *   allow_untested_firmware = 1                  -> anyfw
      *   screenshot        = 1                        -> shot     (M99)
      *   screenshot_buttons = 0..3                    -> shotkey= (the combo preset)
+     *   screenshot_buttons = 4 + screenshot_custom = ZR+Down+Capture
+     *                                                -> shotkey=4 shotmask=N [shotcap] (v0.7.11)
+     *   screenshot_location = album                  -> shotalbum (v0.7.11: next to the
+     *                                                  system's screenshots, Album/YYYY/MM/DD)
      *   audio             = 1 | 0 (default 1)        -> audio    (v0.3: game audio from grc:d)
      *   usb_mode          = viewer | webcam          -> uvc      (v0.4: a UVC camera, read at boot)
      *   encoder_test      = 1                        -> nvab     (v0.6: the bitrate experiment; not in the manager)
@@ -134,7 +139,7 @@ namespace ams::mitm::applet::armfile {
     inline size_t BuildReleaseArm(const char *ini, size_t n, char *out, size_t cap) {
         unsigned qp = 20, gop = 60, wait = 20, u = 0;
         unsigned shotkey = 0;
-        bool cap720 = false, anyfw = false, shot = false, audio = true, uvc = false, uvcraw = false, nvab = false, net = false, nohb = false, nodethome = false;
+        bool cap720 = false, anyfw = false, shot = false, audio = true, uvc = false, uvcraw = false, nvab = false, net = false, nohb = false, nodethome = false, shotalbum = false;
         char v[32];
         if (IniValue(ini, n, "quality", v, sizeof(v))) {
             if (std::strcmp(v, "medium") == 0) { qp = 24; }
@@ -146,7 +151,15 @@ namespace ams::mitm::applet::armfile {
         if (IniValue(ini, n, "start_delay", v, sizeof(v)) && ParseUnsigned(v, &u) && u <= 600) { wait = u; }
         if (IniValue(ini, n, "allow_untested_firmware", v, sizeof(v)) && std::strcmp(v, "1") == 0) { anyfw = true; }
         if (IniValue(ini, n, "screenshot", v, sizeof(v)) && std::strcmp(v, "1") == 0) { shot = true; }
-        if (IniValue(ini, n, "screenshot_buttons", v, sizeof(v)) && ParseUnsigned(v, &u) && u <= 3) { shotkey = u; }
+        if (IniValue(ini, n, "screenshot_buttons", v, sizeof(v)) && ParseUnsigned(v, &u) && u <= 4) { shotkey = u; }
+        unsigned shotmask = 0;
+        bool shotcap = false;
+        {
+            char cv[128];
+            if (IniValue(ini, n, "screenshot_custom", cv, sizeof(cv))) { shotmask = sft::shotbuttons::Parse(cv, &shotcap); }
+        }
+        if (shotkey == 4 && shotmask == 0 && !shotcap) { shotkey = 0; }   /* custom, but nothing recorded */
+        if (IniValue(ini, n, "screenshot_location", v, sizeof(v)) && std::strcmp(v, "album") == 0) { shotalbum = true; }
         if (IniValue(ini, n, "audio", v, sizeof(v)) && std::strcmp(v, "0") == 0) { audio = false; }
         if (IniValue(ini, n, "usb_mode", v, sizeof(v)) && std::strcmp(v, "webcam") == 0) { uvc = true; }
         if (IniValue(ini, n, "encoder_test", v, sizeof(v)) && std::strcmp(v, "1") == 0) { nvab = true; }
@@ -160,8 +173,12 @@ namespace ams::mitm::applet::armfile {
             else if (std::strcmp(v, "webcam-any") == 0) { uvc = true; uvcraw = true; net = false; }
             else if (std::strcmp(v, "usb") == 0) { uvc = uvcraw = false; net = false; }
         }
-        char shotbuf[24] = "";
-        if (shot) { std::snprintf(shotbuf, sizeof(shotbuf), " shot shotkey=%u", shotkey); }
+        char shotbuf[72] = "";
+        if (shot) {
+            char custom[40] = "";
+            if (shotkey == 4) { std::snprintf(custom, sizeof(custom), " shotmask=%u%s", shotmask, shotcap ? " shotcap" : ""); }
+            std::snprintf(shotbuf, sizeof(shotbuf), " shot shotkey=%u%s%s", shotkey, custom, shotalbum ? " shotalbum" : "");
+        }
         /* one transport: "usb" (the viewer or, with uvc, the webcam) or "net" */
         const int w = std::snprintf(out, cap, "vic exec dbg %s live nvqp=%u nvgop=%u wait=%u%s%s%s%s%s%s%s%s%s",
                                     net ? "net" : "usb", qp, gop, wait, cap720 ? " cap720" : "", anyfw ? " anyfw" : "", shotbuf, audio ? " audio" : "",

@@ -17,7 +17,13 @@
 namespace ams::mitm::applet {
 
     extern std::atomic<bool> g_shot_enabled;
-    extern std::atomic<u32>  g_shot_combo;     /* 0 L3+R3, 1 L+R+Down, 2 ZL+ZR+Down, 3 Minus+Down */
+    extern std::atomic<u32>  g_shot_combo;     /* 0 L3+R3, 1 L+R+Down, 2 ZL+ZR+Down, 3 Minus+Down, 4 custom */
+    extern std::atomic<u32>  g_shot_mask;      /* v0.7.11: custom - the buttons (HidNpadButton bits) */
+    extern std::atomic<bool> g_shot_capture;   /* v0.7.11: custom - and the Capture button */
+    /* v0.7.11: save next to the system's screenshots (Album/YYYY/MM/DD) */
+    extern std::atomic<bool> g_shot_album;
+    /* writes the album folder in use to config/switch-frame-tap/album_path.txt */
+    void NoteAlbumPath();
     extern std::atomic<u32>  g_shot_count, g_shot_fail;
 
     void StartShotInput();

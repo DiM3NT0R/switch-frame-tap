@@ -20,18 +20,20 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 #include <functional>
 #include "../../common/sound_patch.hpp"
+#include "../../tier4/applet-mitm/source/shot_buttons.hpp"
 #include "extras.hpp"
 #include <unordered_map>
 
 namespace {
 
-    constexpr const char *AppVersion  = "0.7.11-test2";
+    constexpr const char *AppVersion  = "0.7.11-test4";
     constexpr u64 ModuleTid           = 0x0100000000000C20ull;
     constexpr const char *ModuleDir   = "sdmc:/atmosphere/contents/0100000000000C20";
     constexpr const char *ModuleNsp   = "sdmc:/atmosphere/contents/0100000000000C20/exefs.nsp";
@@ -54,28 +56,80 @@ namespace {
     constexpr const char *TestArmFile = "sdmc:/applet-mitm.armed";
     constexpr const char *ShotDir     = "sdmc:/switch/switch-frame-tap/screenshots";
 
-    /* the screenshots, newest first (the names are dates, so by name) */
+    /* v0.7.11: the system's screenshot folder, as the sysmodule found it
+     * (Nintendo/Album, or the redirected one under emuMMC) */
+    std::string AlbumRoot() {
+        std::string r = "sdmc:/Nintendo/Album";
+        if (FILE *f = std::fopen("sdmc:/config/switch-frame-tap/album_path.txt", "rb")) {
+            char b[0x110] = "";
+            if (std::fgets(b, sizeof(b), f)) {
+                std::string l = b;
+                while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) { l.pop_back(); }
+                if (l.rfind("sdmc:/", 0) == 0) { r = l; }
+            }
+            std::fclose(f);
+        }
+        return r;
+    }
+
+    std::string BaseName(const std::string &p) { const size_t k = p.rfind('/'); return k == std::string::npos ? p : p.substr(k + 1); }
+
+    /* when it was taken, as YYYYMMDDHHMMSSnn, from either name:
+     * "2026-09-29_17-27-10.png" or "2026092917271000-SwitchFrameTap.png" */
+    std::string ShotKey(const std::string &path) {
+        const std::string f = BaseName(path);
+        if (f.size() >= 23 && f[10] == '_') {
+            std::string k;
+            for (char c : f.substr(0, 19)) { if (c >= '0' && c <= '9') { k += c; } }
+            return k + (f.size() > 23 ? f.substr(19, f.size() - 23) : "00");
+        }
+        return f.substr(0, 16);
+    }
+
+    /* the screenshots, newest first: Switch Frame Tap's folder and (v0.7.11)
+     * the ones saved next to the system's, Album/YYYY/MM/DD/*-SwitchFrameTap.png */
     std::vector<std::string> ListShots() {
         std::vector<std::string> v;
-        if (DIR *d = opendir(ShotDir)) {
-            while (dirent *e = readdir(d)) {
-                const size_t n = std::strlen(e->d_name);
-                if (n > 4 && std::strcmp(e->d_name + n - 4, ".png") == 0) { v.emplace_back(e->d_name); }
+        auto scan = [&v](const std::string &dir, const char *suffix) {
+            if (DIR *d = opendir(dir.c_str())) {
+                const size_t sl = std::strlen(suffix);
+                while (dirent *e = readdir(d)) {
+                    const size_t n = std::strlen(e->d_name);
+                    if (n > sl && std::strcmp(e->d_name + n - sl, suffix) == 0) { v.push_back(dir + "/" + e->d_name); }
+                }
+                closedir(d);
             }
-            closedir(d);
+        };
+        auto subdirs = [](const std::string &dir) {
+            std::vector<std::string> out;
+            if (DIR *d = opendir(dir.c_str())) {
+                while (dirent *e = readdir(d)) {
+                    if (e->d_name[0] != '.' && std::strlen(e->d_name) <= 4 && std::isdigit(static_cast<unsigned char>(e->d_name[0]))) { out.push_back(dir + "/" + e->d_name); }
+                }
+                closedir(d);
+            }
+            return out;
+        };
+        scan(ShotDir, ".png");
+        for (const auto &y : subdirs(AlbumRoot())) {
+            for (const auto &m : subdirs(y)) {
+                for (const auto &d : subdirs(m)) { scan(d, "-SwitchFrameTap.png"); }
+            }
         }
-        std::sort(v.begin(), v.end(), [](const std::string &a, const std::string &b) { return a > b; });
+        std::sort(v.begin(), v.end(), [](const std::string &a, const std::string &b) { return ShotKey(a) > ShotKey(b); });
         return v;
     }
 
-    /* "2026-09-29_17-27-10.png" -> "2026-09-29  17:27:10" */
-    std::string ShotLabel(const std::string &f) {
-        if (f.size() >= 23 && f[10] == '_') {
-            std::string t = f.substr(11, 8);
-            std::replace(t.begin(), t.end(), '-', ':');
-            return f.substr(0, 10) + "  " + t + f.substr(19, f.size() - 23);
+    /* "2026-09-29  17:27:10", from either name */
+    std::string ShotLabel(const std::string &path) {
+        const std::string k = ShotKey(path);
+        if (k.size() >= 14) {
+            std::string l = k.substr(0, 4) + "-" + k.substr(4, 2) + "-" + k.substr(6, 2) + "  " + k.substr(8, 2) + ":" + k.substr(10, 2) + ":" + k.substr(12, 2);
+            if (k.size() >= 16 && k.substr(14, 2) != "00") { l += " (" + k.substr(14, 2) + ")"; }
+            if (BaseName(path).find("-SwitchFrameTap") != std::string::npos) { l += "  Album"; }
+            return l;
         }
-        return f.substr(0, f.size() - 4);
+        return BaseName(path);
     }
 
     bool FileExists(const char *p) { struct stat st; return stat(p, &st) == 0; }
@@ -138,7 +192,8 @@ namespace {
     const int KeyframeFrames[]        = { 30, 60, 120, 240 };
     const char *const KeyframeNames[] = { "Every 0.5 s", "Every second", "Every 2 s", "Every 4 s" };
     const int DelaySeconds[]          = { 5, 10, 20, 30, 60 };
-    const char *const ComboNames[]    = { "L3 + R3 (click both sticks)", "L + R + D-pad Down", "ZL + ZR + D-pad Down", "Minus + D-pad Down" };
+    const char *const ComboNames[]    = { "L3 + R3 (click both sticks)", "L + R + D-pad Down", "ZL + ZR + D-pad Down", "Minus + D-pad Down", "Custom" };
+    constexpr int ComboCustom = 4;   /* v0.7.11: screenshot_custom */
 
     struct Settings {
         int quality = 0;        /* index into QualityKeys */
@@ -148,7 +203,11 @@ namespace {
         bool any_fw = false;
         bool shot = false;
         int shot_combo = 0;     /* index into ComboNames */
+        uint32_t shot_mask = 0;   /* v0.7.11: the custom combo's buttons (HidNpadButton bits 0-15) */
+        bool shot_capture = false;/* v0.7.11: ...and the Capture button */
         bool audio = true;      /* v0.3 */
+        bool shot_album = false;  /* v0.7.11: screenshots next to the system's (Album) */
+        bool detach_home = true;  /* v0.7.11 (PR #13): end the stream on HOME; kept when saving */
         int conn = 0;           /* v0.7: connection - 0 USB (PC viewer), 1 USB webcam, 2 (v0.7.7) USB webcam NV12, 3 network; from the next boot */
     };
 
@@ -191,12 +250,15 @@ namespace {
         if (IniGet(ini, "start_delay", &v)) { for (int i = 0; i < 5; ++i) { if (std::atoi(v.c_str()) == DelaySeconds[i]) { s.delay = i; } } }
         if (IniGet(ini, "allow_untested_firmware", &v)) { s.any_fw = v == "1"; }
         if (IniGet(ini, "screenshot", &v)) { s.shot = v == "1"; }
+        if (IniGet(ini, "screenshot_location", &v)) { s.shot_album = v == "album"; }
+        if (IniGet(ini, "detach_on_home", &v)) { s.detach_home = v != "0"; }
         if (IniGet(ini, "audio", &v)) { s.audio = v != "0"; }
         /* the v0.4-v0.7 keys first, then the one that replaced them */
         if (IniGet(ini, "usb_mode", &v) && v == "webcam") { s.conn = 1; }
         if (IniGet(ini, "network", &v) && v == "1") { s.conn = ConnNetwork; }
         if (IniGet(ini, "connection", &v)) { s.conn = v == "network" ? ConnNetwork : v == "webcam-any" ? 2 : v == "webcam" ? 1 : 0; }
-        if (IniGet(ini, "screenshot_buttons", &v)) { const int k = std::atoi(v.c_str()); if (k >= 0 && k <= 3) { s.shot_combo = k; } }
+        if (IniGet(ini, "screenshot_buttons", &v)) { const int k = std::atoi(v.c_str()); if (k >= 0 && k <= ComboCustom) { s.shot_combo = k; } }
+        if (IniGet(ini, "screenshot_custom", &v)) { s.shot_mask = sft::shotbuttons::Parse(v.c_str(), &s.shot_capture); }
         return s;
     }
 
@@ -205,6 +267,8 @@ namespace {
         mkdir(ConfigDir, 0777);
         FILE *f = std::fopen(ConfigIni, "wb");
         if (f == nullptr) { return false; }
+        char custom[96];
+        sft::shotbuttons::Format(s.shot_mask, s.shot_capture, custom, sizeof(custom));
         std::fprintf(f,
             "# Switch Frame Tap settings - written by the manager app; editing by hand is fine.\n"
             "# quality: high | medium | low  (high: the best picture and the most USB bandwidth)\n"
@@ -219,8 +283,15 @@ namespace {
             "allow_untested_firmware = %d\n"
             "# screenshot: 1 = a button combo saves a native-resolution PNG to /switch/switch-frame-tap/screenshots\n"
             "screenshot = %d\n"
-            "# screenshot_buttons: 0 = L3 + R3, 1 = L + R + D-pad Down, 2 = ZL + ZR + D-pad Down, 3 = Minus + D-pad Down\n"
+            "# screenshot_buttons: 0 = L3 + R3, 1 = L + R + D-pad Down, 2 = ZL + ZR + D-pad Down, 3 = Minus + D-pad Down,\n"
+            "#                     4 = screenshot_custom (A B X Y L R ZL ZR L3 R3 Plus Minus Up Down Left Right Capture)\n"
             "screenshot_buttons = %d\n"
+            "screenshot_custom = %s\n"
+            "# screenshot_location: app (/switch/switch-frame-tap/screenshots) | album (next to the system's screenshots,\n"
+            "#                      Nintendo/Album/YYYY/MM/DD - under emuMMC its own Nintendo folder)\n"
+            "screenshot_location = %s\n"
+            "# detach_on_home: 1 = pressing HOME ends the stream and frees its memory | 0 = keep showing the paused game\n"
+            "detach_on_home = %d\n"
             "# audio: 1 = send the game's sound to the PC viewer\n"
             "audio = %d\n"
             "# connection: usb (the PC viewer over USB) | webcam (a USB camera for OBS; no sound) |\n"
@@ -228,7 +299,8 @@ namespace {
             "#             network (the PC viewer over Wi-Fi or the dock's LAN port - play docked). Read at boot.\n"
             "connection = %s\n",
             QualityKeys[s.quality], KeyframeFrames[s.keyframe], s.cap720 ? "720" : "1080",
-            DelaySeconds[s.delay], s.any_fw ? 1 : 0, s.shot ? 1 : 0, s.shot_combo, s.audio ? 1 : 0, ConnKeys[s.conn]);
+            DelaySeconds[s.delay], s.any_fw ? 1 : 0, s.shot ? 1 : 0, s.shot_combo, custom, s.shot_album ? "album" : "app", s.detach_home ? 1 : 0,
+            s.audio ? 1 : 0, ConnKeys[s.conn]);
         std::fclose(f);
         return true;
     }
@@ -299,6 +371,7 @@ namespace {
     };
 
     bool g_open_gallery = false;
+    bool g_record_combo = false;   /* v0.7.11: the custom screenshot combo's recording screen */
     const extras::Tool *g_pending_install = nullptr;   /* v0.7.5: Get extras - run from the main loop */
 
     struct App {
@@ -331,6 +404,15 @@ namespace {
         }
 
         void Toast(const std::string &s) { toast = s; toast_frames = 180; }
+
+        std::string CustomComboText() const {
+            char b[96];
+            sft::shotbuttons::Format(set.shot_mask, set.shot_capture, b, sizeof(b));
+            if (b[0] == 0) { return "Custom (not recorded yet)"; }
+            std::string t = b;
+            for (size_t i = 0; (i = t.find('+', i)) != std::string::npos; i += 3) { t.replace(i, 1, " + "); }
+            return t;
+        }
 
         void Saved() {
             if (!SaveSettings(set)) { Toast("Could not write config.ini"); return; }
@@ -525,17 +607,36 @@ namespace {
                 "docked or with ReverseNX-RT, 1280x720 handheld) as a PNG in /switch/switch-frame-tap/screenshots. "
                 "Works with or without the PC viewer; the PC stream pauses briefly while it saves. With the Ultrahand "
                 "overlay menu installed, a notification confirms each one." });
-            rows.push_back({ Kind::Setting, "Buttons", [this] { return std::string(ComboNames[set.shot_combo]); }, nullptr,
-                [this](int d) { set.shot_combo = (set.shot_combo + (d > 0 ? 1 : 3)) % 4; Saved(); },
+            rows.push_back({ Kind::Setting, "Buttons", [this] { return set.shot_combo == ComboCustom ? CustomComboText() : std::string(ComboNames[set.shot_combo]); }, nullptr,
+                [this](int d) { set.shot_combo = (set.shot_combo + (d > 0 ? 1 : ComboCustom)) % (ComboCustom + 1); Saved(); },
                 "Hold these together to take a screenshot. Pick a combo your game does not use - L3 + R3 (pressing both "
-                "sticks in) is rarely used by games." });
+                "sticks in) is rarely used by games. Custom: your own buttons (below)." });
+            rows.push_back({ Kind::Setting, "Custom: record buttons", [this] {
+                    return set.shot_combo == ComboCustom ? std::string("Press A, then hold them") : std::string("-");
+                }, nullptr, [](int) { g_record_combo = true; },
+                "Record your own screenshot combo: press A here, then hold the buttons you want together for two "
+                "seconds. Add the Capture button with the next setting - pressing it here would take a picture of this app." });
+            rows.push_back({ Kind::Setting, "Custom: with the Capture button", [this] {
+                    return set.shot_combo == ComboCustom ? std::string(set.shot_capture ? "On" : "Off") : std::string("-");
+                }, [this] { return (set.shot_combo == ComboCustom && set.shot_capture) ? ColGood : ColDim; },
+                [this](int) { set.shot_combo = ComboCustom; set.shot_capture = !set.shot_capture; Saved(); },
+                "The Capture button (the square one) as part of the combo - for example ZR + Capture. The console still "
+                "takes its own screenshot (a JPEG in the Album) when you press it, so you get both: the system's and this "
+                "native-resolution PNG. Capture on its own also works: every system screenshot then gets a PNG too." });
+            rows.push_back({ Kind::Setting, "Save to", [this] { return std::string(set.shot_album ? "With the system's screenshots" : "Switch Frame Tap folder"); }, nullptr,
+                [this](int) { set.shot_album = !set.shot_album; Saved(); },
+                "Where the screenshots go. With the system's screenshots: the same Album folder on the SD card as the "
+                "console's own (Nintendo/Album/year/month/day - under emuMMC, its own Nintendo folder), named by date so a "
+                "PC lists them together. The Switch's Album app does not show them (it only shows Nintendo's own JPEGs); "
+                "this app's screenshot viewer does. Switch Frame Tap folder: /switch/switch-frame-tap/screenshots." });
             rows.push_back({ Kind::Setting, "View screenshots", [this] {
                     char b[32];
                     std::snprintf(b, sizeof(b), "%zu saved", shot_files);
                     return std::string(b);
                 }, nullptr, [](int) { g_open_gallery = true; },
                 "Browse the screenshots on the SD card: A shows one full screen (Left/Right for the others), Y deletes. "
-                "They are in /switch/switch-frame-tap/screenshots - copy them to a PC from there." });
+                "They are in /switch/switch-frame-tap/screenshots, or with the system's screenshots (Save to) - copy them "
+                "to a PC from there." });
             rows.push_back({ Kind::Info, "Taken this boot", [this] {
                     if (!have_status || st.version < 2) { return std::string("-"); }
                     char b[48];
@@ -744,7 +845,7 @@ namespace {
         void Load() {
             if (files.empty() || tex_idx == sel || (settle < 6 && !full)) { return; }
             Drop();
-            const std::string path = std::string(ShotDir) + "/" + files[sel];
+            const std::string &path = files[sel];
             struct stat st;
             bytes = stat(path.c_str(), &st) == 0 ? st.st_size : 0;
             if (SDL_Surface *surf = IMG_Load(path.c_str())) {
@@ -759,7 +860,7 @@ namespace {
         void Delete() {
             if (files.empty()) { return; }
             if (confirm != sel) { confirm = sel; note = "Press Y again to delete this screenshot"; return; }
-            const std::string path = std::string(ShotDir) + "/" + files[sel];
+            const std::string &path = files[sel];
             note = std::remove(path.c_str()) == 0 ? "Deleted" : "Could not delete it";
             files.erase(files.begin() + sel);
             if (sel >= static_cast<int>(files.size()) && sel > 0) { --sel; }
@@ -850,7 +951,7 @@ namespace {
             char info[96];
             std::snprintf(info, sizeof(info), "%d x %d   %.1f MB", g.tw, g.th, g.bytes / 1048576.0);
             Text(info, 525, 530, 1, ColText);
-            Text(g.files[g.sel], 525, 570, 0, ColDim);
+            Text(g.files[g.sel].substr(g.files[g.sel].rfind("sdmc:", 0) == 0 ? 5 : 0), 525, 570, 0, ColDim);
         } else if (g.tex_idx == g.sel) {
             Text("This file could not be opened.", 875, 300, 1, ColWarn, 1);
         } else {
@@ -904,6 +1005,58 @@ namespace {
 namespace {
 
     /* v0.7.5: a Get extras download, with its progress on screen; B cancels */
+    /* v0.7.11: hold the buttons for the custom screenshot combo: the same set
+     * held for two seconds is recorded; touch cancels, 20 s gives up */
+    void RecordCombo(App &app, PadState &pad) {
+        auto draw = [](const char *line1, const std::string &names, double frac) {
+            SDL_SetRenderDrawColor(g_ren, 0x16, 0x17, 0x1B, 0xFF);
+            SDL_RenderClear(g_ren);
+            Fill(0, 0, ScreenW, 88, { 0x1E, 0x20, 0x26, 0xFF });
+            Fill(0, 88, ScreenW, 2, ColAccent);
+            Text("Screenshot combo", 60, 22, 3, ColText);
+            Text(line1, ScreenW / 2, 230, 2, ColText, 1);
+            Text(names.empty() ? std::string("-") : names, ScreenW / 2, 310, 2, ColAccent, 1);
+            const int bx = 340, bw = 600, by = 380, bh = 16;
+            Fill(bx, by, bw, bh, { 0x2A, 0x2D, 0x35, 0xFF });
+            if (frac > 0.0) { Fill(bx, by, static_cast<int>(bw * (frac > 1.0 ? 1.0 : frac)), bh, ColAccent); }
+            Text("The Capture button is a separate setting (pressing it here would take a picture of this app).", ScreenW / 2, 440, 1, ColDim, 1);
+            Fill(0, 656, ScreenW, 64, { 0x1E, 0x20, 0x26, 0xFF });
+            Text("Touch the screen to cancel", ScreenW - 60, 673, 1, ColText, 2);
+            SDL_RenderPresent(g_ren);
+        };
+        auto names_of = [](uint32_t m) {
+            char b[96];
+            sft::shotbuttons::Format(m, false, b, sizeof(b));
+            std::string t = b;
+            for (size_t i = 0; (i = t.find('+', i)) != std::string::npos; i += 3) { t.replace(i, 1, " + "); }
+            return t;
+        };
+        uint32_t last = 0, steady = 0;
+        bool released = false, touch_free = false;   /* the tap that opened this must lift first */
+        for (u32 frame = 0; frame < 60 * 20 && appletMainLoop(); ++frame) {
+            padUpdate(&pad);
+            HidTouchScreenState ts = {};
+            const bool touched = hidGetTouchScreenStates(&ts, 1) && ts.count > 0;
+            if (!touched) { touch_free = true; } else if (touch_free) { app.Toast("Not changed"); return; }
+            const uint32_t held = static_cast<uint32_t>(padGetButtons(&pad)) & sft::shotbuttons::AllButtons;
+            if (!released) {                      /* the A that opened this first */
+                if (held == 0) { released = true; }
+                draw("Let go of all buttons...", "", 0.0);
+                continue;
+            }
+            if (held != last) { last = held; steady = 0; } else if (held != 0) { ++steady; }
+            if (held != 0 && steady >= 120) {
+                app.set.shot_mask = held;
+                app.set.shot_combo = ComboCustom;
+                app.Saved();
+                app.Toast("Screenshot combo: " + app.CustomComboText());
+                return;
+            }
+            draw(held ? "Keep holding them..." : "Hold the buttons you want, together", names_of(held), held ? steady / 120.0 : 0.0);
+        }
+        app.Toast("Not changed");
+    }
+
     void RunInstall(App &app, PadState &pad) {
         const extras::Tool &t = *g_pending_install;
         g_pending_install = nullptr;
@@ -1026,6 +1179,7 @@ int main(int, char **) {
         }
 
         if (g_pending_install != nullptr) { RunInstall(app, pad); touching = true; touch_row = -1; continue; }
+        if (g_record_combo) { g_record_combo = false; RecordCombo(app, pad); touching = true; touch_row = -1; continue; }
         if (g_open_gallery) {
             g_open_gallery = false;
             g_gal.Open();
