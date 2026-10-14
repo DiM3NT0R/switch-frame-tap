@@ -837,6 +837,8 @@ static void ren_swap(SDL_Window **winp, SDL_Renderer **renp, SDL_Texture **texp)
     if (*texp) { SDL_DestroyTexture(*texp); *texp = NULL; }
     if (g_font_tex) SDL_DestroyTexture(g_font_tex);
     g_font_tex = NULL; g_font_ren = NULL;
+    if (g_ui_disc) SDL_DestroyTexture(g_ui_disc);
+    g_ui_disc = NULL; g_ui_disc_ren = NULL;
     up_reset();
     SDL_DestroyRenderer(*renp);
     *renp = NULL;
@@ -871,8 +873,96 @@ static void ren_swap(SDL_Window **winp, SDL_Renderer **renp, SDL_Texture **texp)
     fprintf(stderr, "upscaler: %s\n", t);
 }
 
+/* ---- v0.7.12: what the keys, the settings drawer and the mouse do ------- */
+static int g_dec_reopen = 0;                  /* hardware decoding switched: the decoder thread reopens */
+
+static void act_conn(int net)                 /* USB / network; a stream on the old one ends */
+{
+    if (net == (g_conn == CONN_NET)) return;
+    g_conn = net ? CONN_NET : CONN_USB;
+    prefs_save();
+    fprintf(stderr, "\nconnection: %s\n", g_conn == CONN_NET ? "network" : "USB");
+    g_net_status[0] = 0;
+    if (g_usb || g_sock != SOCK_BAD) g_lost = 1;
+}
+
+static int act_ip_possible(void) { return g_conn == CONN_NET && g_menu && g_sock == SOCK_BAD && !g_ip_editing; }
+
+static void act_ip(void)                      /* type the Switch's address */
+{
+    if (!act_ip_possible()) return;
+    snprintf(g_ip_edit, sizeof(g_ip_edit), "%.31s", g_last_ip);
+    g_ip_editing = 1;
+    SDL_StartTextInput();
+}
+
+static void act_fullscreen(SDL_Window *win)
+{
+    const int fs = (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+    SDL_SetWindowFullscreen(win, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+}
+
+static void act_record(SDL_Window *win)
+{
+    rec_toggle();
+    char t[256], rs[200];
+    rec_status(rs, sizeof(rs));
+    snprintf(t, sizeof(t), "Switch Frame Tap%s", rs[0] ? rs : "  |  recording stopped");
+    SDL_SetWindowTitle(win, t);
+}
+
+static void act_hud(int mode)                 /* the stats overlay; -1 = the next level */
+{
+    if (mode < 0) hud_cycle();
+    else { g_hud = mode; hud_toast_mode(); }
+    prefs_save();
+    fprintf(stderr, "\nstats overlay: %s\n", hud_mode_name[g_hud]);
+}
+
+static void act_vsync(SDL_Renderer *ren, int on)
+{
+    g_vsync = on;
+    SDL_RenderSetVSync(ren, g_vsync);
+    prefs_save();
+    hud_toast(g_vsync ? "Vsync on" : "Vsync off: lower latency, may tear");
+    fprintf(stderr, "\nvsync %s\n", g_vsync ? "on" : "off");
+}
+
+static void act_upscaler(SDL_Renderer *ren, int mode)   /* -1 = the next one */
+{
+    char t[112];
+    g_upscaler = mode < 0 ? (g_upscaler + 1) % UP_COUNT : mode;
+    prefs_save();
+    if (up_needs_swap(ren)) {                 /* the other graphics API: the live loop switches */
+        g_ren_swap = 1;
+        snprintf(t, sizeof(t), "Upscaling: %s - switching the graphics mode...", up_name[g_upscaler]);
+    } else {
+        up_describe(ren, t, sizeof(t));
+    }
+    hud_toast(t);
+    fprintf(stderr, "\nupscaler: %s\n", t);
+}
+
+static void act_mute(int mute)
+{
+    g_mute = mute;
+    if (g_adev) { SDL_ClearQueuedAudio(g_adev); SDL_PauseAudioDevice(g_adev, 1); g_a_paused = 1; }
+    fprintf(stderr, "\naudio %s\n", g_mute ? "muted" : "on");
+}
+
+static void act_hwdec(int on)
+{
+    g_hwdec = on;
+    g_dec_reopen = 1;
+    prefs_save();
+    hud_toast(on ? "Hardware decoding on" : "Hardware decoding off - decoding on the CPU");
+}
+
+#include "ui.h"                /* v0.7.12: the home screen and the settings drawer */
+
 static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
 {
+    g_ui_win = win;
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) { g_quit = 1; continue; }
@@ -882,13 +972,8 @@ static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
         if (e.type == SDL_KEYDOWN && (e.key.keysym.sym > 0x7f || e.key.keysym.sym == SDLK_UNKNOWN) &&
             e.key.keysym.scancode >= SDL_SCANCODE_A && e.key.keysym.scancode <= SDL_SCANCODE_Z)
             e.key.keysym.sym = SDLK_a + (e.key.keysym.scancode - SDL_SCANCODE_A);
-        /* v0.7.12: the picture panel (P) takes the arrows, Backspace, 0 and Esc while open */
-        if (e.type == SDL_KEYDOWN && !g_ip_editing && pic_key(e.key.keysym.sym)) { prefs_save(); continue; }
-        if (e.type == SDL_KEYDOWN && !g_ip_editing && e.key.keysym.sym == SDLK_p && !e.key.repeat) {
-            g_pic_panel = !g_pic_panel;
-            if (g_menu) menu_draw(ren);
-            continue;
-        }
+        /* v0.7.12: the settings drawer and the mouse first */
+        if (!g_ip_editing && ui_event(win, ren, &e)) { if (g_menu) menu_draw(ren); continue; }
         /* v0.7: typing the Switch's address (I) takes every key */
         if (g_ip_editing) {
             if (e.type == SDL_TEXTINPUT) {
@@ -920,72 +1005,17 @@ static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
             if (g_menu) menu_draw(ren);
             continue;
         }
-        if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_TAB && !e.key.repeat) {
-            /* v0.7: USB <-> network; a stream on the old one ends */
-            g_conn = g_conn == CONN_NET ? CONN_USB : CONN_NET;
-            prefs_save();
-            fprintf(stderr, "\nconnection: %s\n", g_conn == CONN_NET ? "network" : "USB");
-            g_net_status[0] = 0;
-            if (g_usb || g_sock != SOCK_BAD) g_lost = 1;
-            if (g_menu) menu_draw(ren);
-            continue;
-        }
-        if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_i && !e.key.repeat && g_conn == CONN_NET && g_menu && g_sock == SOCK_BAD) {
-            snprintf(g_ip_edit, sizeof(g_ip_edit), "%.31s", g_last_ip);
-            g_ip_editing = 1;
-            SDL_StartTextInput();
-            menu_draw(ren);
-            continue;
-        }
-        if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) {
-            /* leave fullscreen first; Esc in a window closes it */
-            if (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP) SDL_SetWindowFullscreen(win, 0);
-            else g_quit = 1;
-        } else if ((e.type == SDL_KEYDOWN && (e.key.keysym.sym == SDLK_F11 || e.key.keysym.sym == SDLK_f)) ||
-                   (e.type == SDL_MOUSEBUTTONDOWN && e.button.clicks == 2)) {
-            const int fs = (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
-            SDL_SetWindowFullscreen(win, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
-        } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_r && !e.key.repeat) {
-            rec_toggle();
-            char t[256], rs[200];
-            rec_status(rs, sizeof(rs));
-            snprintf(t, sizeof(t), "Switch Frame Tap%s", rs[0] ? rs : "  |  recording stopped");
-            SDL_SetWindowTitle(win, t);
-            if (g_menu) menu_draw(ren);
-        } else if (e.type == SDL_KEYDOWN && (e.key.keysym.sym == SDLK_o || e.key.keysym.sym == SDLK_F3) && !e.key.repeat) {
-            /* v0.7.2: the stats overlay - off, FPS, graphs, full */
-            hud_cycle();
-            prefs_save();
-            fprintf(stderr, "\nstats overlay: %s\n", hud_mode_name[g_hud]);
-        } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_v && !e.key.repeat) {
-            /* v0.7.11: vsync off = each frame on screen the moment it is
-             * decoded (no wait for the refresh), lower latency, may tear */
-            g_vsync = !g_vsync;
-            SDL_RenderSetVSync(ren, g_vsync);
-            prefs_save();
-            hud_toast(g_vsync ? "Vsync on  (V)" : "Vsync off: lower latency, may tear  (V)");
-            fprintf(stderr, "\nvsync %s\n", g_vsync ? "on" : "off");
-            if (g_menu) menu_draw(ren);
-        } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_u && !e.key.repeat) {
-            /* v0.7.11: GPU upscaling - off / FSR 1 / NIS */
-            char t[112];
-            g_upscaler = (g_upscaler + 1) % UP_COUNT;
-            prefs_save();
-            if (up_needs_swap(ren)) {          /* the other graphics API: the live loop switches */
-                g_ren_swap = 1;
-                snprintf(t, sizeof(t), "Upscaling: %s - switching the graphics mode...", up_name[g_upscaler]);
-            } else {
-                up_describe(ren, t, sizeof(t));
-            }
-            hud_toast(t);
-            fprintf(stderr, "\nupscaler: %s\n", t);
-            if (g_menu) menu_draw(ren);
-        } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_m) {
-            g_mute = !g_mute;
-            if (g_adev) { SDL_ClearQueuedAudio(g_adev); SDL_PauseAudioDevice(g_adev, 1); g_a_paused = 1; }
-            fprintf(stderr, "\naudio %s\n", g_mute ? "muted" : "on");
-            if (g_menu) menu_draw(ren);
-        } else if (e.type == SDL_WINDOWEVENT) {
+        /* the shortcuts (the drawer has all of them too) */
+        const SDL_Keycode key = e.type == SDL_KEYDOWN && !e.key.repeat ? e.key.keysym.sym : SDLK_UNKNOWN;
+        if (key == SDLK_TAB) { act_conn(g_conn != CONN_NET); if (g_menu) menu_draw(ren); }
+        else if (key == SDLK_i && act_ip_possible()) { act_ip(); menu_draw(ren); }
+        else if (key == SDLK_F11 || key == SDLK_f || (e.type == SDL_MOUSEBUTTONDOWN && e.button.clicks == 2)) act_fullscreen(win);
+        else if (key == SDLK_r) { act_record(win); if (g_menu) menu_draw(ren); }
+        else if (key == SDLK_o || key == SDLK_F3) act_hud(-1);
+        else if (key == SDLK_v) { act_vsync(ren, !g_vsync); if (g_menu) menu_draw(ren); }
+        else if (key == SDLK_u) { act_upscaler(ren, -1); if (g_menu) menu_draw(ren); }
+        else if (key == SDLK_m) { act_mute(!g_mute); if (g_menu) menu_draw(ren); }
+        else if (e.type == SDL_WINDOWEVENT) {
             /* resized or uncovered with no new frame: draw the last one again */
             if (g_menu) { menu_draw(ren); continue; }
             SDL_RenderClear(ren);
@@ -1136,6 +1166,16 @@ static int decoder_main(void *arg)
         if (hdr.flags & SFT_FLAG_KEY) s_keyframes++;
         g_t_rx[hdr.kind & 255] = t_hdr;
         g_age_ms[hdr.kind & 255] = (hdr.stride != 0 && hdr.stride < 10000000u) ? hdr.stride / 1000.0 : -1.0;
+        if (g_dec_reopen) {                    /* v0.7.12: hardware decoding switched in the drawer */
+            g_dec_reopen = 0;
+            h264_close(a->dec);
+            if (h264_open(a->dec, 1, 1, g_hwdec) == 0) {
+                if (a->dec->hwname) snprintf(g_dec_name, sizeof(g_dec_name), "GPU (%s)", a->dec->hwname);
+                else snprintf(g_dec_name, sizeof(g_dec_name), "1 thread");
+                g_dec_mode = g_dec_name;
+                g_dec_low = 1; g_dec_fallback = 0;
+            }
+        }
         const Uint64 d0 = SDL_GetPerformanceCounter();
         const int got = h264_decode(a->dec, payload, (int)hdr.length, (int64_t)hdr.kind);
         const double dm = (double)(SDL_GetPerformanceCounter() - d0) * 1000.0 / (double)freq;
@@ -1347,7 +1387,8 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
                 hud_draw(ren, (int)W, (int)H, cs, rs[0] ? rs + 5 : "");
                 SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
             }
-            if (g_pic_panel) { pic_draw(ren, (int)W, (int)H); SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); }   /* v0.7.12: P */
+            ui_overlay(ren, (int)W, (int)H);   /* v0.7.12: the Settings button and the drawer */
+            SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
             if (g_shot && g_run_secs > 0 && (double)(SDL_GetPerformanceCounter() - t_start) / (double)freq >= g_run_secs - 1.0) {
                 int ow = 0, oh = 0;
                 SDL_GetRendererOutputSize(ren, &ow, &oh);

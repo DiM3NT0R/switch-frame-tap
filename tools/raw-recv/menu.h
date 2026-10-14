@@ -1,7 +1,7 @@
-/* menu.h - v0.5: the viewer's main screen while there is no picture: what it
- * is waiting for, the keys (R record, M mute, F11 fullscreen, Esc), and where
- * recordings go. Drawn with SDL2 alone: text comes from font_dejavu.h, a
- * DejaVu Sans atlas built into the program (tools/raw-recv/gen_font.py). */
+/* menu.h - v0.5: the viewer's text and drawing basics, and the home screen's
+ * state (v0.7.12: the screen itself is drawn in ui.h). Drawn with SDL2 alone:
+ * text comes from font_dejavu.h, a DejaVu Sans atlas built into the program
+ * (tools/raw-recv/gen_font.py). */
 #include "font_dejavu.h"
 
 enum { MENU_WAITING = 0, MENU_NODRIVER, MENU_CONNECTED, MENU_PAUSED };
@@ -74,164 +74,62 @@ static void fill(SDL_Renderer *ren, int x, int y, int w, int h, SDL_Color c)
     SDL_RenderFillRect(ren, &r);
 }
 
-/* a key cap: a light box with the key's name in it */
-static int key_cap(SDL_Renderer *ren, const char *k, int x, int y)
+/* v0.7.12: rounded panels - a smooth (anti-aliased) disc made once per
+ * renderer, its quarters for the corners, plain rectangles for the rest.
+ * Coordinates in the current units (float: the overlay draws scaled). */
+static SDL_Texture *g_ui_disc = NULL;
+static SDL_Renderer *g_ui_disc_ren = NULL;
+
+static void ui_disc_init(SDL_Renderer *ren)
 {
-    const SDL_Color edge = { 90, 97, 112, 255 }, face = { 44, 48, 58, 255 }, ink = { 235, 237, 242, 255 };
-    const int w = text_width(k, 22, 1) + 28, h = 38;
-    fill(ren, x, y, w, h, edge);
-    fill(ren, x + 2, y + 2, w - 4, h - 5, face);
-    text_draw(ren, k, x + w / 2, y + 6, 22, 1, ink, 1);
-    return w;
+    if (g_ui_disc && g_ui_disc_ren == ren) return;
+    if (g_ui_disc && g_ui_disc_ren != ren) g_ui_disc = NULL;   /* went with its renderer */
+    enum { D = 96 };
+    static Uint32 px[D * D];
+    for (int y = 0; y < D; y++)
+        for (int x = 0; x < D; x++) {
+            /* 4x4 samples a pixel: the coverage of the disc */
+            int in = 0;
+            for (int sy = 0; sy < 4; sy++)
+                for (int sx = 0; sx < 4; sx++) {
+                    const float fx = x + (sx + 0.5f) / 4 - D / 2.0f, fy = y + (sy + 0.5f) / 4 - D / 2.0f;
+                    in += fx * fx + fy * fy <= (D / 2.0f) * (D / 2.0f);
+                }
+            px[y * D + x] = ((Uint32)(in * 255 / 16) << 24) | 0xFFFFFFu;
+        }
+    g_ui_disc = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, D, D);
+    g_ui_disc_ren = ren;
+    if (g_ui_disc) {
+        SDL_UpdateTexture(g_ui_disc, NULL, px, D * 4);
+        SDL_SetTextureBlendMode(g_ui_disc, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(g_ui_disc, SDL_ScaleModeLinear);
+    }
 }
+
+static void ui_rrect(SDL_Renderer *ren, float x, float y, float w, float h, float r, SDL_Color c)
+{
+    if (w <= 0 || h <= 0) return;
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    ui_disc_init(ren);
+    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(ren, c.r, c.g, c.b, c.a);
+    if (!g_ui_disc || r < 1) { SDL_FRect f = { x, y, w, h }; SDL_RenderFillRectF(ren, &f); return; }
+    const SDL_FRect mid = { x, y + r, w, h - 2 * r }, top = { x + r, y, w - 2 * r, r }, bot = { x + r, y + h - r, w - 2 * r, r };
+    SDL_RenderFillRectF(ren, &mid);
+    SDL_RenderFillRectF(ren, &top);
+    SDL_RenderFillRectF(ren, &bot);
+    SDL_SetTextureColorMod(g_ui_disc, c.r, c.g, c.b);
+    SDL_SetTextureAlphaMod(g_ui_disc, c.a);
+    const int H = 48;   /* half the disc texture */
+    const SDL_Rect q[4] = { { 0, 0, H, H }, { H, 0, H, H }, { 0, H, H, H }, { H, H, H, H } };
+    const SDL_FRect d[4] = { { x, y, r, r }, { x + w - r, y, r, r }, { x, y + h - r, r, r }, { x + w - r, y + h - r, r, r } };
+    for (int i = 0; i < 4; i++) SDL_RenderCopyF(ren, g_ui_disc, &q[i], &d[i]);
+}
+
 
 static const char *rec_dir_for_menu(void);
 static const char *net_peer_for_menu(void);
 static int status_for_menu(char *head, size_t hn, char *detail, size_t dn, uint32_t *reason);
 
-static void menu_draw(SDL_Renderer *ren)
-{
-    const SDL_Color bg = { 18, 20, 24, 255 }, panel = { 28, 31, 38, 255 }, ink = { 235, 237, 242, 255 },
-                    dim = { 150, 156, 168, 255 }, accent = { 0, 184, 230, 255 }, warn = { 255, 196, 0, 255 },
-                    red = { 235, 64, 52, 255 }, good = { 76, 217, 100, 255 };
-    text_init(ren);
-    SDL_RenderSetLogicalSize(ren, 1280, 720);
-    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(ren, bg.r, bg.g, bg.b, bg.a);
-    SDL_RenderClear(ren);                  /* the letterbox bars too (DiM3NT0R, PR #12) */
-    fill(ren, 0, 0, 1280, 720, bg);
-
-    text_draw(ren, "Switch Frame Tap", 640, 34, 56, 1, ink, 1);
-
-    /* v0.7: the connection, one at a time (Tab) */
-    {
-        const int net = conn_for_menu();
-        const int y = 112;
-        const int wl = text_width("Connection:", 22, 0), wu = text_width("USB", 22, 1), wn = text_width("Network", 22, 1);
-        int x = 640 - (wl + 24 + wu + 44 + wn + 24 + 44 + 60) / 2;
-        text_draw(ren, "Connection:", x, y + 7, 22, 0, dim, 0);
-        x += wl + 24;
-        const SDL_Color on_bg = { 0, 120, 150, 255 }, off_bg = { 36, 40, 48, 255 };
-        fill(ren, x - 12, y, wu + 24, 38, net ? off_bg : on_bg);
-        text_draw(ren, "USB", x, y + 6, 22, 1, net ? dim : ink, 0);
-        x += wu + 44;
-        fill(ren, x - 12, y, wn + 24, 38, net ? on_bg : off_bg);
-        text_draw(ren, "Network", x, y + 6, 22, 1, net ? ink : dim, 0);
-        x += wn + 44;
-        text_draw(ren, "(Tab)", x, y + 8, 20, 0, dim, 0);
-    }
-
-    const char *head = "", *l1 = "", *l2 = "";
-    SDL_Color hc = accent;
-    char errline[200];
-    switch (g_menu_state) {
-    case MENU_WAITING:
-        if (conn_for_menu()) {
-            head = "Looking for the Switch on the network";
-            l1 = "Set Connection to Network in the Switch's manager app (then restart the Switch).";
-            if (ip_edit_for_menu()) {
-                snprintf(errline, sizeof(errline), "Switch IP: %s_     (Enter to connect, Esc to cancel)", ip_edit_for_menu());
-            } else {
-                snprintf(errline, sizeof(errline), "%s  Not found? Press I to type its IP address.", net_status_for_menu());
-            }
-            l2 = errline;
-        } else {
-            head = "Waiting for the Switch";
-            l1 = "Connect it with the USB-C cable (handheld mode).";
-            l2 = "For docked play: Connection = Network, here and in the Switch's manager app.";
-        }
-        break;
-    case MENU_NODRIVER:
-        hc = warn;
-#ifdef _WIN32
-        head = "The Switch is connected but has no USB driver";
-        l1 = "Install WinUSB for it once with Zadig - see README-WINDOWS.txt.";
-#elif defined(__APPLE__)
-        head = "The Switch is connected but cannot be opened";
-        l1 = "Is another program using it (another viewer, OBS)? Close it, or unplug and plug the cable again.";
-#else
-        head = "The Switch is connected but cannot be opened";
-        l1 = "Install the udev rule (99-switch-frame-tap.rules) - see the README.";
-#endif
-        snprintf(errline, sizeof(errline), "(%s)", g_menu_err);
-        l2 = errline;
-        break;
-    case MENU_PAUSED:
-        hc = good;
-        head = "Connected - the game is not on screen";
-        l1 = "Go back to the game (or start one) and the picture returns here.";
-        l2 = "Nothing? Check that streaming is on in the overlay or the manager app.";
-        break;
-    default:
-        hc = good;
-        head = net_peer_for_menu()[0] ? "Connected over the network - waiting for a game" : "Connected - waiting for a game";
-        l1 = "Start a game on the Switch and the picture appears here.";
-        l2 = "Nothing? Check that streaming is on in the overlay or the manager app.";
-        break;
-    }
-    /* v0.7.10: connected, no picture - the console says why */
-    char st_head[64], st_detail[120];
-    uint32_t st_reason = 0;
-    if ((g_menu_state == MENU_CONNECTED || g_menu_state == MENU_PAUSED) &&
-        status_for_menu(st_head, sizeof(st_head), st_detail, sizeof(st_detail), &st_reason)) {
-        head = st_head;
-        l1 = st_detail;
-        l2 = "";
-        /* no game / not on screen / starting: normal; anything else is a stop */
-        hc = (st_reason == 1 || st_reason == 2 || st_reason == 10) ? good : warn;
-    }
-    text_draw(ren, head, 640, 170, 32, 1, hc, 1);
-    text_draw(ren, l1, 640, 220, 22, 0, dim, 1);
-    text_draw(ren, l2, 640, 250, 22, 0, ip_edit_for_menu() ? ink : dim, 1);
-
-    /* the keys */
-    const int px0 = 250, pw = 780, py0 = 296, ph = 332;
-    fill(ren, px0, py0, pw, ph, panel);
-    text_draw(ren, "KEYS", px0 + 30, py0 + 18, 18, 1, dim, 0);
-    struct { const char *k, *what; } rows[] = {
-        { "R", "Record / stop recording" },
-        { "M", "Mute / unmute the game sound" },
-        { "F11", "Fullscreen - or double-click the window" },
-        { "Esc", "Leave fullscreen / close" },
-        { "Tab", "Switch the connection: USB / Network" },
-        { "I", "Type the Switch's IP address (Network)" },
-        { "O", "Stats overlay: off / FPS / graphs / full (or F3)" },
-        { "V", "Vsync on / off (off: lower latency, may tear)" },
-#ifdef _WIN32
-        { "U", "GPU upscaling: off / FSR 1 / NIS / RTX VSR" },
-#elif defined(__APPLE__)
-        { "U", "GPU upscaling (Windows and Linux for now)" },
-#else
-        { "U", "GPU upscaling: off / AMD FSR 1 / NVIDIA NIS" },
-#endif
-        { "P", "Picture: brightness, contrast, saturation, sharpness" },
-    };
-    for (int i = 0; i < 10; i++) {
-        const int y = py0 + 44 + i * 28;
-        key_cap(ren, rows[i].k, px0 + 30, y);
-        text_draw(ren, rows[i].what, px0 + 140, y + 4, 22, 0, (i == 5 && !conn_for_menu()) ? dim : ink, 0);
-    }
-    /* live state next to R and M */
-    {
-        char rs[200];
-        rec_status(rs, sizeof(rs));
-        const char *r = rs[0] ? rs + 5 : "";             /* rec_status starts with "  |  " */
-        if (rec_active()) text_draw(ren, r, px0 + pw - 30, py0 + 48, 20, 1, red, 2);
-        if (g_mute) text_draw(ren, "muted", px0 + pw - 30, py0 + 76, 20, 1, warn, 2);
-        if (g_upscaler != UP_OFF) text_draw(ren, up_name[g_upscaler], px0 + pw - 30, py0 + 44 + 8 * 28 + 4, 20, 1, warn, 2);
-        if (!rec_active() && r[0]) text_draw(ren, r, 640, 690, 18, 0, dim, 1);
-    }
-
-    if (net_peer_for_menu()[0] && g_menu_state != MENU_WAITING && g_menu_state != MENU_NODRIVER) {
-        char nl[128];
-        snprintf(nl, sizeof(nl), "Network: the Switch at %s", net_peer_for_menu());
-        text_draw(ren, nl, 640, 662, 18, 0, dim, 1);
-    }
-    const char *dir = rec_dir_for_menu();
-    if (dir[0]) {
-        char line[1200];
-        snprintf(line, sizeof(line), "Recordings (MP4 with sound) are saved in %s", dir);
-        text_draw(ren, line, 640, 634, 18, 0, dim, 1);
-    }
-    SDL_RenderPresent(ren);
-}
+static void menu_draw(SDL_Renderer *ren);   /* v0.7.12: ui.h - the home screen */

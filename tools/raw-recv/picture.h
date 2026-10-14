@@ -1,8 +1,9 @@
 /* v0.7.12: picture controls for the live view - brightness, contrast,
  * saturation, gamma and sharpness (reirahul's idea, GBAtemp).
  *
- * P opens the panel: Up / Down picks a control, Left / Right changes it,
- * Backspace puts it back, 0 resets them all; remembered in viewer.ini.
+ * In the settings drawer (ui.h; P opens it there): Left / Right or the mouse
+ * changes them, Backspace puts one back, 0 resets them all; remembered in
+ * viewer.ini.
  * Done on the CPU, in the drawing thread, so it is the same with every
  * renderer (OpenGL, Direct3D, Metal) and in front of the upscalers: a lookup
  * table for the luma (brightness, contrast, gamma) and one for the chroma
@@ -17,7 +18,6 @@ typedef struct { int bright, contrast, sat, gamma10, sharp; } pic_t;
 enum { PIC_BRIGHT, PIC_CONTRAST, PIC_SAT, PIC_GAMMA, PIC_SHARP, PIC_N };
 static const pic_t pic_default = { 0, 100, 100, 10, 0 };
 static pic_t g_pic = { 0, 100, 100, 10, 0 };
-static int g_pic_panel = 0, g_pic_row = 0;
 
 static const struct { const char *name; int min, max, step; } pic_rows[PIC_N] = {
     { "Brightness", -50, 50, 5 },
@@ -159,60 +159,4 @@ static PIC_VEC int pic_apply(uint8_t *data[3], int linesize[3], int W, int H, in
     data[1] = o1; linesize[1] = cs;
     if (!nv12) { data[2] = o2; linesize[2] = cs; }
     return 1;
-}
-
-/* ---- the keys and the panel ------------------------------------------- */
-
-/* a key while the panel is open: 1 = it was ours */
-static int pic_key(SDL_Keycode k)
-{
-    if (!g_pic_panel) return 0;
-    int *f = pic_field(g_pic_row);
-    switch (k) {
-        case SDLK_UP: g_pic_row = (g_pic_row + PIC_N - 1) % PIC_N; return 1;
-        case SDLK_DOWN: g_pic_row = (g_pic_row + 1) % PIC_N; return 1;
-        case SDLK_LEFT: if (*f > pic_rows[g_pic_row].min) *f -= pic_rows[g_pic_row].step; return 1;
-        case SDLK_RIGHT: if (*f < pic_rows[g_pic_row].max) *f += pic_rows[g_pic_row].step; return 1;
-        case SDLK_BACKSPACE: case SDLK_DELETE: *f = *(&pic_default.bright + (f - &g_pic.bright)); return 1;
-        case SDLK_0: case SDLK_KP_0: g_pic = pic_default; return 1;
-        case SDLK_ESCAPE: g_pic_panel = 0; return 1;
-        default: return 0;
-    }
-}
-
-/* drawn over the picture, bottom right (clear of the stats overlay), in its 720p units */
-static void pic_draw(SDL_Renderer *ren, int W, int H)
-{
-    if (!g_pic_panel || H <= 0 || text_init(ren) != 0) return;
-    SDL_BlendMode old;
-    SDL_GetRenderDrawBlendMode(ren, &old);
-    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-    float sx = 1, sy = 1;
-    SDL_RenderGetScale(ren, &sx, &sy);
-    const float k = (float)H / 720.0f;
-    SDL_RenderSetScale(ren, sx * k, sy * k);
-    const int w720 = (int)(W / k);
-    const int pw = 380, rh = 30, ph = 54 + PIC_N * rh + 26, px = w720 - pw - 10, py = 720 - ph - 10;
-    fill(ren, px, py, pw, ph, hud_panel);
-    text_draw(ren, "PICTURE", px + 14, py + 12, 16, 1, hud_dim, 0);
-    text_draw(ren, pic_neutral() ? "defaults" : "adjusted", px + pw - 14, py + 12, 16, 0, pic_neutral() ? hud_dim : hud_good, 2);
-    for (int r = 0; r < PIC_N; r++) {
-        const int y = py + 44 + r * rh;
-        const SDL_Color c = r == g_pic_row ? hud_good : hud_ink;
-        if (r == g_pic_row) fill(ren, px + 6, y - 3, pw - 12, rh - 2, (SDL_Color){ 255, 255, 255, 28 });
-        text_draw(ren, pic_rows[r].name, px + 14, y, 18, r == g_pic_row, c, 0);
-        /* a bar from min to max, the default marked */
-        const int bx = px + 150, bw = 150, by = y + 9;
-        const int v = *pic_field(r), lo = pic_rows[r].min, hi = pic_rows[r].max;
-        const int def = *(&pic_default.bright + r);
-        fill(ren, bx, by, bw, 4, (SDL_Color){ 255, 255, 255, 50 });
-        fill(ren, bx + (def - lo) * bw / (hi - lo) - 1, by - 4, 2, 12, (SDL_Color){ 255, 255, 255, 90 });
-        fill(ren, bx + (v - lo) * bw / (hi - lo) - 4, by - 4, 8, 12, c);
-        char t[16];
-        pic_value_text(r, t, sizeof(t));
-        text_draw(ren, t, px + pw - 14, y, 18, 0, c, 2);
-    }
-    text_draw(ren, "Up/Down  Left/Right  Backspace  0 = reset   P", px + 14, py + ph - 24, 14, 0, hud_dim, 0);
-    SDL_RenderSetScale(ren, sx, sy);
-    SDL_SetRenderDrawBlendMode(ren, old);
 }

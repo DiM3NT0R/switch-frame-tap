@@ -85,6 +85,12 @@ static void hud_cycle(void)
     g_hud_toast = SDL_GetPerformanceCounter();
 }
 
+static void hud_toast_mode(void)            /* v0.7.12: the "Stats overlay: ..." note */
+{
+    g_hud_toast_text[0] = 0;
+    g_hud_toast = SDL_GetPerformanceCounter();
+}
+
 static void hud_toast(const char *text)
 {
     snprintf(g_hud_toast_text, sizeof(g_hud_toast_text), "%s", text);
@@ -124,7 +130,7 @@ static void hud_graph(SDL_Renderer *ren, int x, int y, int w, int h, const char 
                       float floor_max, const float *guides, int nguides, int key_red,
                       const char *leg1, SDL_Color lc1, const char *leg2, SDL_Color lc2)
 {
-    fill(ren, x, y, w, h, hud_panel);
+    ui_rrect(ren, x, y, w, h, 8, hud_panel);
     const int gx = x + 6, gw = w - 12, gy = y + 22, gh = h - 28;
     /* the scale: the largest sample (or the floor), rounded up */
     float mx = floor_max;
@@ -169,7 +175,7 @@ static void hud_graph(SDL_Renderer *ren, int x, int y, int w, int h, const char 
 static void hud_sgraph(SDL_Renderer *ren, int x, int y, int w, int h, const char *label, const char *unit,
                        const hud_sring *r, SDL_Color c, float floor_max)
 {
-    fill(ren, x, y, w, h, hud_panel);
+    ui_rrect(ren, x, y, w, h, 8, hud_panel);
     const int gx = x + 6, gw = w - 12, gy = y + 22, gh = h - 28;
     float mx = floor_max;
     for (int i = 0; i < r->n; i++) if (hud_sat(r, i) > mx) mx = hud_sat(r, i);
@@ -211,20 +217,20 @@ static void hud_draw(SDL_Renderer *ren, int W, int H, const char *conn, const ch
     if (g_hud_toast) {
         char t[112];
         if (g_hud_toast_text[0]) snprintf(t, sizeof(t), "%s", g_hud_toast_text);
-        else snprintf(t, sizeof(t), "Stats overlay: %s  (O / F3)", hud_mode_name[g_hud]);
-        const int tw = text_width(t, 20, 1) + 30;
-        fill(ren, (w720 - tw) / 2, 640, tw, 36, hud_panel);
-        hud_text(ren, t, w720 / 2, 646, 20, 1, hud_ink, 1);
+        else snprintf(t, sizeof(t), "Stats overlay: %s", hud_mode_name[g_hud]);
+        const int tw = text_width(t, 18, 1) + 44;
+        ui_rrect(ren, (w720 - tw) / 2, 646, tw, 40, 20, (SDL_Color){ 22, 25, 31, 235 });
+        text_draw(ren, t, w720 / 2, 655, 18, 1, hud_ink, 1);
     }
 
     char t[256];
     const SDL_Color fc = hud_fps_colour();
     if (g_hud == HUD_FPS) {
         snprintf(t, sizeof(t), "%.0f fps", g_hs.have ? g_hs.fps : 0.0);
-        fill(ren, 8, 8, text_width(t, 26, 1) + 20, 38, hud_panel);
+        ui_rrect(ren, 10, 10, text_width(t, 26, 1) + 24, 40, 10, hud_panel);
         hud_text(ren, t, 18, 12, 26, 1, fc, 0);
     } else if (g_hud == HUD_GRAPHS) {
-        fill(ren, 10, 10, 470, 34, hud_panel);
+        ui_rrect(ren, 10, 10, 470, 34, 8, hud_panel);
         snprintf(t, sizeof(t), "%.1f fps   %.1f Mbps   latency %.0f ms", g_hs.fps, g_hs.mbps, g_hs.pc + g_hs.con);
         text_draw(ren, t, 20, 16, 19, 1, fc, 0);
         const float ft[] = { 16.7f, 33.3f };
@@ -234,7 +240,7 @@ static void hud_draw(SDL_Renderer *ren, int W, int H, const char *conn, const ch
     } else if (g_hud == HUD_FULL) {
         /* numbers on the left, graphs on the right */
         const int lx = 10, ly = 10, lw = 340;
-        fill(ren, lx, ly, lw, 492, hud_panel);
+        ui_rrect(ren, lx, ly, lw, 492, 10, hud_panel);
         int y = ly + 10;
         #define HUD_ROW(name, ...) do { text_draw(ren, name, lx + 12, y, 16, 0, hud_dim, 0); \
             snprintf(t, sizeof(t), __VA_ARGS__); text_draw(ren, t, lx + lw - 12, y, 16, 1, hud_ink, 2); y += 22; } while (0)

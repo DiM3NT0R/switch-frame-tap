@@ -260,13 +260,13 @@ default audio device.
 | **R** | record / stop recording (below) |
 | **M** | mute / unmute the game's sound |
 | **F11** or a double-click | fullscreen |
-| **Esc** | leave fullscreen / close |
+| **Esc** | Settings (v0.7.12): every option in one place - connection, display, upscaling, decoding, picture, sound, recording - with the mouse or the arrow keys |
 | **Tab** | the connection: USB / Network (v0.7.0; remembered) |
 | **I** | type the Switch's IP address (Network, if it is not found by itself) |
 | **O** or **F3** | the stats overlay: off / FPS / graphs / full (v0.7.2; remembered) |
 | **V** | vsync on / off - off is lower latency but may tear (v0.7.11; remembered) |
 | **U** | GPU upscaling: off / AMD FSR 1 / NVIDIA NIS, plus NVIDIA RTX Video Super Resolution on Windows (v0.7.11; remembered, off by default) |
-| **P** | picture controls: brightness, contrast, saturation, gamma, sharpness - arrows to change, 0 resets (v0.7.12; remembered) |
+| **P** | Settings at the picture controls: brightness, contrast, saturation, gamma, sharpness (v0.7.12; remembered) |
 
 It reads USB, decodes and draws on separate threads and shows the frames in
 order, one per screen refresh (vsync), so the picture stays smooth. Its
