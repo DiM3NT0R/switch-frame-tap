@@ -315,7 +315,7 @@ static void prefs_load(void)
         if (sscanf(line, "stats_overlay=%d", &hm) == 1 && hm >= 0 && hm < HUD_MODES) g_hud = hm;
         if (sscanf(line, "vsync=%d", &hm) == 1) g_vsync = hm != 0;
         if (sscanf(line, "upscaler=%127s", v) == 1) up_set_by_key(v);
-        if (sscanf(line, "fsr_sharpness=%d", &hm) == 1 && (hm == 40 || hm == 70 || hm == 100)) g_fsr_sharpness = hm;
+        if (sscanf(line, "fsr_sharpness=%d", &hm) == 1 && hm >= 0 && hm <= 100) g_fsr_sharpness = hm;
         if (sscanf(line, "hwdec=%d", &hm) == 1) g_hwdec = hm != 0;
         if (sscanf(line, "picture=%127s", v) == 1) pic_parse(v);
     }
@@ -1027,7 +1027,7 @@ static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
         else if (key == SDLK_u) { act_upscaler(ren, -1); if (g_menu) menu_draw(ren); }
 #ifdef __APPLE__
         else if (key == SDLK_F9) {
-            g_fsr_sharpness = g_fsr_sharpness == 40 ? 70 : g_fsr_sharpness == 70 ? 100 : 40;
+            g_fsr_sharpness = g_fsr_sharpness < 40 ? 40 : g_fsr_sharpness < 70 ? 70 : g_fsr_sharpness < 100 ? 100 : 40;
             act_upscaler(ren, UP_FSR);
         }
 #endif

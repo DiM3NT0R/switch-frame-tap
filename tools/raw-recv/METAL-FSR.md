@@ -1,7 +1,9 @@
 # Metal FSR 1 on macOS
 
 The existing Upscaling setting and U key select Off / FSR 1 on macOS. FSR
-is off by default, as on the other platforms. F9 selects RCAS strength
+is off by default, as on the other platforms. FSR sharpness has a 0-100% slider
+below the mode selector (Left/Right: 5%, Enter/Backspace: reset to 70%).
+F9 selects RCAS strength
 40 / 70 / 100 percent and enables FSR; the choice is remembered as
 `fsr_sharpness` in viewer.ini. The full stats overlay reports the actual
 kernel and strength. NIS remains unavailable on macOS.

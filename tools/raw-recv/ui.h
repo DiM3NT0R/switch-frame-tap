@@ -29,7 +29,7 @@ static int g_ui_scroll_to = -1;            /* bring this row into view at the ne
 static SDL_Window *g_ui_win = NULL;        /* for the fullscreen switch's state (app_events sets it) */
 
 enum { H_NONE, H_SETTINGS, H_CLOSE, H_BACKDROP, H_CONN, H_IP, H_FULL, H_VSYNC, H_UPS, H_HUD, H_HWDEC,
-       H_PIC, H_PIC_RESET, H_SOUND, H_REC, H_PANEL };
+       H_PIC, H_PIC_RESET, H_SOUND, H_REC, H_PANEL, H_FSR_SHARP };
 
 typedef struct { SDL_FRect r; int id, arg; } ui_hit_t;
 static ui_hit_t g_ui_hits[96];
@@ -290,6 +290,22 @@ static void ui_drawer(SDL_Renderer *ren, float W)
         static const char *const ups[] = { "Off", "FSR 1", "NIS", "RTX VSR" };
         ui_seg(ren, xr, 0, y + 32, ups, UP_COUNT, g_upscaler, H_UPS, 13);
         y += h2 + 4;
+#ifdef __APPLE__
+        if (g_upscaler == UP_FSR) {
+            const float sh = 52, ty = y + 34;
+            ui_row(H_FSR_SHARP, 0, y, sh);
+            if (ui_focused(H_FSR_SHARP, 0)) ui_rrect(ren, cx - 12, y - 2, cw + 24, sh + 4, 10, UI_SURF2);
+            text_draw(ren, "FSR sharpness", (int)cx, (int)(y + 4), 16, 0, UI_INK, 0);
+            char value[16]; snprintf(value, sizeof(value), "%d%%", g_fsr_sharpness);
+            text_draw(ren, value, (int)xr, (int)(y + 4), 15, 1, UI_ACC, 2);
+            const float vx = cx + cw * g_fsr_sharpness / 100.0f;
+            ui_rrect(ren, cx, ty - 2, cw, 4, 2, UI_SURF3);
+            ui_rrect(ren, cx, ty - 2, vx - cx, 4, 2, UI_ACC);
+            ui_rrect(ren, vx - 8, ty - 8, 16, 16, 8, UI_INK);
+            ui_hit(cx - 8, ty - 14, cw + 16, 28, H_FSR_SHARP, 0);
+            y += sh + 4;
+        }
+#endif
         ui_row(H_HUD, 0, y, h2);
         if (ui_focused(H_HUD, 0)) ui_rrect(ren, cx - 12, y - 2, cw + 24, h2 + 4, 10, UI_SURF2);
         text_draw(ren, "Stats overlay", (int)cx, (int)(y + 4), 17, 0, UI_INK, 0);
@@ -621,6 +637,10 @@ static void ui_change(SDL_Window *win, SDL_Renderer *ren, int id, int arg, int d
     case H_HWDEC: act_hwdec(!g_hwdec); break;
     case H_UPS: act_upscaler(ren, d < 0 ? (g_upscaler + UP_COUNT - 1) % UP_COUNT : (g_upscaler + 1) % UP_COUNT); break;
     case H_HUD: act_hud(d < 0 ? (g_hud + HUD_MODES - 1) % HUD_MODES : (g_hud + 1) % HUD_MODES); break;
+    case H_FSR_SHARP:
+        g_fsr_sharpness = d == 0 ? 70 : SDL_clamp(g_fsr_sharpness + d * 5, 0, 100);
+        prefs_save();
+        break;
     case H_PIC: {
         int *f = pic_field(arg);
         if (d < 0 && *f > pic_rows[arg].min) *f -= pic_rows[arg].step;
@@ -639,14 +659,17 @@ static void ui_change(SDL_Window *win, SDL_Renderer *ren, int id, int arg, int d
 static void ui_slide(float mx)
 {
     for (int i = 0; i < g_ui_nhits; i++) {
-        if (g_ui_hits[i].id != H_PIC || g_ui_hits[i].arg != g_ui_drag_arg) continue;
+        if (g_ui_hits[i].id != g_ui_drag || g_ui_hits[i].arg != g_ui_drag_arg) continue;
         const SDL_FRect r = g_ui_hits[i].r;
         const float tx = r.x + 8, tw = r.w - 16;
-        const int a = g_ui_drag_arg, lo = pic_rows[a].min, hi = pic_rows[a].max, st = pic_rows[a].step;
+        const int a = g_ui_drag_arg;
+        const int fsr = g_ui_drag == H_FSR_SHARP;
+        const int lo = fsr ? 0 : pic_rows[a].min, hi = fsr ? 100 : pic_rows[a].max, st = fsr ? 1 : pic_rows[a].step;
         float f = (mx - tx) / tw;
         f = f < 0 ? 0 : f > 1 ? 1 : f;
         int v = lo + (int)lrintf(f * (hi - lo) / st) * st;
-        *pic_field(a) = v;
+        if (fsr) g_fsr_sharpness = v;
+        else *pic_field(a) = v;
         return;
     }
 }
@@ -664,7 +687,7 @@ static int ui_event(SDL_Window *win, SDL_Renderer *ren, const SDL_Event *e)
     if (e->type == SDL_MOUSEMOTION) {
         g_ui_mouse_t = SDL_GetPerformanceCounter();
         g_ui_kbd = 0;
-        if (g_ui_drag == H_PIC) { ui_slide(g_ui_mx); prefs_save(); }
+        if (g_ui_drag == H_PIC || g_ui_drag == H_FSR_SHARP) { ui_slide(g_ui_mx); prefs_save(); }
         return g_menu;                      /* the home screen redraws for the hover */
     }
     if (e->type == SDL_MOUSEBUTTONUP) { if (g_ui_drag) { g_ui_drag = 0; return 1; } return 0; }
@@ -685,6 +708,7 @@ static int ui_event(SDL_Window *win, SDL_Renderer *ren, const SDL_Event *e)
             case H_UPS: act_upscaler(ren, h->arg); break;
             case H_HUD: act_hud(h->arg); break;
             case H_PIC: g_ui_drag = H_PIC; g_ui_drag_arg = h->arg; ui_slide(g_ui_mx); prefs_save(); break;
+            case H_FSR_SHARP: g_ui_drag = H_FSR_SHARP; g_ui_drag_arg = 0; ui_slide(g_ui_mx); prefs_save(); break;
             case H_PIC_RESET: g_pic = pic_default; prefs_save(); break;
             case H_SOUND: act_mute(!h->arg); break;
             case H_REC: act_record(win); break;
@@ -717,6 +741,7 @@ static int ui_event(SDL_Window *win, SDL_Renderer *ren, const SDL_Event *e)
         return 1;
     case SDLK_BACKSPACE: case SDLK_DELETE:
         if (g_ui_kbd && g_ui_rows[g_ui_focus].id == H_PIC) ui_change(win, ren, H_PIC, g_ui_rows[g_ui_focus].arg, 0);
+        if (g_ui_kbd && g_ui_rows[g_ui_focus].id == H_FSR_SHARP) ui_change(win, ren, H_FSR_SHARP, 0, 0);
         return 1;
     case SDLK_0: case SDLK_KP_0: g_pic = pic_default; prefs_save(); return 1;
     default: return 0;                      /* the shortcuts still work with the drawer open */

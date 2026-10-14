@@ -120,6 +120,18 @@ int main(int argc,char **argv)
     hud_sec hs={.fps=60,.w=65,.h=37}; hud_second(&hs);
     hud_draw(ren,1280,720,"USB","");
     g_ui_open=1; ui_overlay(ren,1280,720);
+    int slider = -1;
+    for (int i=0;i<g_ui_nhits;i++) if (g_ui_hits[i].id==H_FSR_SHARP) slider=i;
+    assert(slider>=0);
+    SDL_FRect track=g_ui_hits[slider].r;
+    g_ui_drag=H_FSR_SHARP; g_ui_drag_arg=0;
+    ui_slide(track.x-100); assert(g_fsr_sharpness==0);
+    ui_slide(track.x+8+(track.w-16)*.53f); assert(g_fsr_sharpness==53);
+    prefs_save(); g_fsr_sharpness=0; prefs_load(); assert(g_fsr_sharpness==53);
+    ui_slide(track.x+track.w+100); assert(g_fsr_sharpness==100);
+    ui_change(win,ren,H_FSR_SHARP,0,-1); assert(g_fsr_sharpness==95);
+    ui_change(win,ren,H_FSR_SHARP,0,0); assert(g_fsr_sharpness==70);
+    g_ui_drag=0; ui_overlay(ren,1280,720);
     float sx,sy; SDL_RenderGetScale(ren,&sx,&sy);
     printf("UI scale %.3f %.3f, width %.1f, hits %d\n",sx,sy,g_ui_w,g_ui_nhits);
     int ow,oh; SDL_GetRendererOutputSize(ren,&ow,&oh);
