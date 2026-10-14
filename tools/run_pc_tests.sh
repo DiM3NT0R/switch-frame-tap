@@ -26,6 +26,8 @@ trap 'rm -rf "$tmp"' EXIT
 echo "switch-frame-tap PC-side checks"
 run "arm-file parser (whole tokens, numbers)" \
     bash -c "g++ -std=c++20 -Itier4/applet-mitm/source tier4/applet-mitm/test/armfile_test.cpp -o $tmp/armfile_test && $tmp/armfile_test"
+run "early encode collection: pending, ready, once only, cancelled (PR #12)" \
+    bash -c "g++ -std=c++20 -Itier4/applet-mitm/source tier4/applet-mitm/test/idlework_test.cpp -o $tmp/idlework_test && $tmp/idlework_test"
 run "screenshot PNG: de-swizzle + stored-deflate writer, checked with zlib" \
     bash -c "g++ -std=c++20 -O2 -Itier4/applet-mitm/source tier4/applet-mitm/test/png_test.cpp -lz -o $tmp/png_test && $tmp/png_test >/dev/null"
 run "slot matcher: one buffer per swapchain slot (Smash Ultimate), matched while streaming" \

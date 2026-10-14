@@ -173,6 +173,10 @@ int main() {
     ExpectRelease("# grc dump nvp\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio");
     /* default on; only detach_on_home=0 emits nodethome */
     ExpectRelease("detach_on_home = 0\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio nodethome");
+    /* v0.7.12: early collection (PR #12) - on by default, 0 or ab emit a token */
+    ExpectRelease("early_collect = 0\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio earlyoff");
+    ExpectRelease("early_collect = ab\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio earlyab");
+    ExpectRelease("early_collect = 1\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio");
     /* v0.7.12: screen off while streaming */
     ExpectRelease("screen_off = 1\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio screenoff");
     ExpectRelease("screen_off = 0\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio");

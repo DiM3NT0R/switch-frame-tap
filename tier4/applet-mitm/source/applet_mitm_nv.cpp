@@ -50,6 +50,7 @@
 #include "applet_mitm_uvc.hpp"
 #include "applet_mitm_net.hpp"
 #include "applet_mitm_slotmatch.hpp"
+#include "applet_mitm_idlework.hpp"
 #include <atomic>
 #include <cstring>
 #include <cstdio>
@@ -1468,6 +1469,7 @@ namespace ams::mitm::applet {
     constinit std::atomic<u64> g_queue_tick{0};
     constinit std::atomic<u32> g_queue_fence_n{0};
     constinit bool g_nvab_armed = false;
+    constinit u32 g_early_collect = 1;
     constinit std::atomic<u32> g_queue_transform{0};
     constinit std::atomic<u32> g_queue_crop_wh{0};
     constinit std::atomic<u64> g_queue_fence[4] = {};
@@ -5595,8 +5597,8 @@ namespace ams::mitm::applet {
              * the fence, polling nvhost-ctrl, at most 30 ms. */
             /* M95: something to do while the GPU finishes (collecting the
              * previous encode); called between polls until it returns true */
-            bool (*idle_fn)(void *) = nullptr;
-            void *idle_ctx = nullptr;
+            EncodeIdleWork idle_work;
+            bool early_poll = false;   /* v0.7.12 (PR #12): poll it while waiting for a present too */
             u64 last_flush_ns = 0;
 
             /* v0.7.1: was 30 ms. Pokemon Sword queues each frame ~20 ms
@@ -5623,7 +5625,7 @@ namespace ams::mitm::applet {
                         if (R_FAILED(NvIoctl(cfd, NvHostIocCtrlSyncptRead, std::addressof(r), sizeof(r), std::addressof(e))) || e != 0) { break; }
                         if (static_cast<s32>(r.value - want) >= 0) { break; }
                         if (armTicksToNs(armGetSystemTick()) - t0 > FenceTimeoutNs) { timed_out = true; break; }
-                        if (idle_fn != nullptr && idle_fn(idle_ctx)) { idle_fn = nullptr; continue; }
+                        if (idle_work.Poll()) { continue; }
                         os::SleepThread(TimeSpan::FromMicroSeconds(250));
                     }
                 }
@@ -5728,9 +5730,13 @@ namespace ams::mitm::applet {
             bool Capture(::ams::svc::Handle dbg, u64 slot_base, u64 *read_ns, u32 *sig, u32 *dropped = nullptr) {
                 this->HoldForMatch(dbg);
                 for (u32 spins = 0; g_queue_count.load(std::memory_order_acquire) == seen && spins < 50; ++spins) {
+                    if (early_poll) { idle_work.Poll(); }
                     os::SleepThread(TimeSpan::FromMilliSeconds(1));
                 }
                 for (u32 retry = 0; ; ) {
+                /* collect before picking a slot: the USB send can block, so
+                 * never in the middle of a framebuffer copy (PR #12) */
+                if (early_poll) { idle_work.Poll(); }
                 const u32 qnow = g_queue_count.load(std::memory_order_acquire);
                 if (qnow == seen) { break; }
                 {
@@ -6604,6 +6610,10 @@ namespace ams::mitm::applet {
                             k.frame, static_cast<unsigned long long>(k.at_ms), k.read_us, k.vic_us, k.enc_us, k.usbw_us, k.copy_us);
                 }
             };
+            /* v0.7.12: the console-side age of what was sent, per A/B half */
+            u64 ab_age_sum = 0, ab_age_max = 0;
+            u32 ab_age_n = 0, early_collects = 0;
+            u64 ec_t0 = armTicksToNs(armGetSystemTick());
             /* true: stop the loop (why/end set) */
             auto collect = [&](InFlight &f) -> bool {
                 f.active = false;
@@ -6695,6 +6705,7 @@ namespace ams::mitm::applet {
                 const u32 payload = static_cast<u32>(HdrsLen + bytes);
                 const u64 t5 = armTicksToNs(armGetSystemTick());
                 const u64 age = (f.present_ns != 0 && t5 > f.present_ns) ? t5 - f.present_ns : 0;
+                if (age != 0) { ab_age_sum += age; ++ab_age_n; if (age > ab_age_max) { ab_age_max = age; } }
                 SftHdrWire h = {};
                 h.magic = 0x52544653u;        /* "SFTR" */
                 h.version = 2;
@@ -6750,6 +6761,7 @@ namespace ams::mitm::applet {
             auto hook = [&]() -> bool {
                 if (!fl.active || !NvfPollDone(s.x, fl.pic, fl.fence)) { return false; }
                 if (collect(fl)) { hook_stop = true; }
+                ++early_collects;
                 return true;
             };
             /* M97: the overlay's fps readout, refreshed about once a second */
@@ -6803,12 +6815,26 @@ namespace ams::mitm::applet {
                     g_live_game_fps_x10.store(static_cast<u32>(static_cast<u64>(qn - o_q0) * UINT64_C(10000000000) / (t0 - o_t0)), std::memory_order_relaxed);
                     o_t0 = t0; o_sent0 = sent; o_q0 = qn;
                 }
+                /* v0.7.12: early collection (PR #12), or A/B: on for the even
+                 * 600-frame halves, off for the odd ones */
+                const bool early = pipe && (g_early_collect == 1 || (g_early_collect == 2 && ((i / 600) & 1) == 0));
+                if (pipe && g_early_collect == 2 && i % 600 == 599) {
+                    const u64 ab_dt = t0 > ec_t0 ? t0 - ec_t0 : 1;
+                    const u64 ab_fps_x10 = static_cast<u64>(ab_age_n) * UINT64_C(10000000000) / ab_dt;
+                    LogLine("   early-collect A/B: %s - console age avg %llu us, max %llu us; %u frames sent, %llu.%llu fps; collected while idle %u",
+                            early ? "ON " : "OFF", static_cast<unsigned long long>(ab_age_n ? ab_age_sum / ab_age_n / 1000 : 0),
+                            static_cast<unsigned long long>(ab_age_max / 1000), ab_age_n,
+                            static_cast<unsigned long long>(ab_fps_x10 / 10), static_cast<unsigned long long>(ab_fps_x10 % 10), early_collects);
+                    ab_age_sum = ab_age_max = 0; ab_age_n = 0; early_collects = 0; ec_t0 = t0;
+                }
+                s.early_poll = early;
                 if (pipe && fl.active) {
-                    s.idle_fn = [](void *p) -> bool { return (*static_cast<decltype(hook) *>(p))(); };
-                    s.idle_ctx = std::addressof(hook);
+                    s.idle_work = { [](void *p) -> bool { return (*static_cast<decltype(hook) *>(p))(); }, std::addressof(hook) };
                 }
                 const bool got = s.Capture(dbg, slot_base, std::addressof(rn), std::addressof(sg), std::addressof(dropped));
-                s.idle_fn = nullptr;
+                if (got && early) { s.idle_work.Poll(); }   /* NVENC done during the copy: send before the VIC */
+                s.idle_work = {};
+                s.early_poll = false;
                 if (hook_stop) { break; }
                 if (!got) { why = SlotReadFailure(); end = StreamEnd::GameGone; break; }
                 const u64 present_ns = armTicksToNs(s.present_tick);

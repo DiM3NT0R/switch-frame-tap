@@ -97,6 +97,10 @@ namespace ams::mitm::applet {
     /* v0.6 bitrate tuning: "nvab" cycles the P-frame encoder settings through
      * four variants, 10 s each, and logs each window's sizes and intra share */
     extern bool g_nvab_armed;
+    /* v0.7.12 (PR #12): early collection of the previous encode in the
+     * pipelined (1080p) stream - 0 off, 1 on, 2 A/B (alternate every 600
+     * frames and log the console's present-to-send time for each) */
+    extern u32 g_early_collect;
     extern bool g_live_armed;     /* M86: stream whenever a viewer and a game are there */
     /* Default on: end the live session when queueBuffer stalls (HOME), free
      * donor memory, then RunLive reattaches on the next present. nodethome
