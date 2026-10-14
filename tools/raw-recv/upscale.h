@@ -47,7 +47,7 @@ static void up_set_by_key(const char *k)
 
 /* before the renderer is made: the upscalers draw with OpenGL, which Linux's
  * SDL uses anyway; Windows' default is Direct3D 11, so it follows the choice
- * (switching between the two takes a restart of the viewer) */
+ * (and U switches between the two on the fly - raw-view.c ren_swap) */
 static const char *up_driver_for(int mode)
 {
     return (mode == UP_FSR || mode == UP_NIS) ? "opengl" : "direct3d11";

@@ -271,9 +271,8 @@ sharpens the enlargement on your graphics card instead of a plain stretch.
 **FSR 1** (AMD FidelityFX Super Resolution) works on any GPU with OpenGL 4.3;
 **NIS** (NVIDIA Image Scaling) too, despite the name; on Windows, **RTX VSR**
 uses an RTX card's own AI upscaler (turn on *RTX Video Enhancement - Super
-resolution* in the NVIDIA app or Control Panel). On Windows, switching between
-RTX VSR and FSR/NIS takes a restart of the viewer (they draw with Direct3D and
-OpenGL). Recordings and screenshots keep the console's own picture.
+resolution* in the NVIDIA app or Control Panel; it costs a few milliseconds
+of latency). Recordings and screenshots keep the console's own picture.
 
 **The stats overlay** (v0.7.2): **O** or **F3** steps through four levels -
 off; **FPS**, a counter in the corner (yellow or red when frames come
