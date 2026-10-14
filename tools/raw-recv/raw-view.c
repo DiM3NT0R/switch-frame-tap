@@ -711,6 +711,56 @@ static void h264_close(h264_t *d)
 #endif
 
 /* --app: window events while there is nothing to draw (and between frames) */
+/* v0.7.11: U picked an upscaler that draws with the other graphics API
+ * (Windows: FSR 1 and NIS with OpenGL, RTX VSR with Direct3D 11). The live
+ * loop makes a new renderer between frames; a window that had OpenGL gets a
+ * new window too (Direct3D's swap chain wants one of its own). */
+static int g_ren_swap = 0;
+
+static void ren_swap(SDL_Window **winp, SDL_Renderer **renp, SDL_Texture **texp)
+{
+    g_ren_swap = 0;
+    SDL_Window *win = *winp;
+    const char *want = up_driver_for(g_upscaler);
+    SDL_RendererInfo ri;
+    const int was_gl = SDL_GetRendererInfo(*renp, &ri) == 0 && strcmp(ri.name, "opengl") == 0;
+    if (*texp) { SDL_DestroyTexture(*texp); *texp = NULL; }
+    if (g_font_tex) SDL_DestroyTexture(g_font_tex);
+    g_font_tex = NULL; g_font_ren = NULL;
+    up_reset();
+    SDL_DestroyRenderer(*renp);
+    *renp = NULL;
+    if (was_gl && strcmp(want, "opengl") != 0) {
+        int x, y, w, h;
+        char title[256];
+        const Uint32 fl = SDL_GetWindowFlags(win);
+        SDL_GetWindowPosition(win, &x, &y);
+        SDL_GetWindowSize(win, &w, &h);
+        snprintf(title, sizeof(title), "%s", SDL_GetWindowTitle(win));
+        SDL_DestroyWindow(win);
+        win = SDL_CreateWindow(title, x, y, w, h, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
+                               (fl & (SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_MAXIMIZED)));
+        *winp = win;
+        if (!win) { fprintf(stderr, "\nSDL window: %s\n", SDL_GetError()); g_quit = 1; return; }
+    }
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, want);
+    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (!ren) {                                /* that one would not start: any renderer */
+        fprintf(stderr, "\n%s renderer: %s\n", want, SDL_GetError());
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, "");
+        ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    }
+    *renp = ren;
+    if (!ren) { fprintf(stderr, "\nSDL renderer: %s\n", SDL_GetError()); g_quit = 1; return; }
+    if (!g_vsync) SDL_RenderSetVSync(ren, 0);
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+    if (SDL_GetRendererInfo(ren, &ri) == 0) fprintf(stderr, "\nrenderer: %s (for %s)\n", ri.name, up_name[g_upscaler]);
+    char t[112];
+    up_describe(ren, t, sizeof(t));
+    hud_toast(t);
+    fprintf(stderr, "upscaler: %s\n", t);
+}
+
 static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
 {
     SDL_Event e;
@@ -798,7 +848,12 @@ static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
             char t[112];
             g_upscaler = (g_upscaler + 1) % UP_COUNT;
             prefs_save();
-            up_describe(ren, t, sizeof(t));
+            if (up_needs_swap(ren)) {          /* the other graphics API: the live loop switches */
+                g_ren_swap = 1;
+                snprintf(t, sizeof(t), "Upscaling: %s - switching the graphics mode...", up_name[g_upscaler]);
+            } else {
+                up_describe(ren, t, sizeof(t));
+            }
             hud_toast(t);
             fprintf(stderr, "\nupscaler: %s\n", t);
             if (g_menu) menu_draw(ren);
@@ -1055,6 +1110,12 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
 
     while (!g_quit) {
         app_events(win, ren, tex);
+        if (g_ren_swap) {                      /* v0.7.11: the upscaler wants the other renderer */
+            ren_swap(&win, &ren, &tex);
+            W = H = 0;
+            if (g_quit) break;
+            if (g_menu) menu_draw(ren);
+        }
         if (g_run_secs > 0 && (double)(SDL_GetPerformanceCounter() - t_start) / (double)freq >= g_run_secs) break;
         if (g_lost) {
             /* the Switch left the bus (rebooted, cable out) */

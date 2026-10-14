@@ -48,11 +48,29 @@ static void up_set_by_key(const char *k)
 /* before the renderer is made: the upscalers draw with OpenGL, which Linux's
  * SDL uses anyway; Windows' default is Direct3D 11, so it follows the choice
  * (switching between the two takes a restart of the viewer) */
+static const char *up_driver_for(int mode)
+{
+    return (mode == UP_FSR || mode == UP_NIS) ? "opengl" : "direct3d11";
+}
+
 static void up_pick_renderer(void)
 {
 #ifdef _WIN32
-    if (g_upscaler == UP_FSR || g_upscaler == UP_NIS) SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
-    else SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d11");
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, up_driver_for(g_upscaler));
+#endif
+}
+
+/* Windows: does the choice need the other renderer? (the viewer then makes a
+ * new one between frames - raw-view.c ren_swap; elsewhere it never does) */
+static int up_needs_swap(SDL_Renderer *ren)
+{
+#ifdef _WIN32
+    SDL_RendererInfo ri;
+    if (g_upscaler == UP_OFF || SDL_GetRendererInfo(ren, &ri) != 0) return 0;
+    return strcmp(ri.name, up_driver_for(g_upscaler)) != 0;
+#else
+    (void)ren;
+    return 0;
 #endif
 }
 
@@ -796,4 +814,20 @@ static void up_hud_text(char *out, size_t cap)
     if (g_upscaler == UP_RTX && g_vsr.vsr < 0) { snprintf(out, cap, "plain, to %dx%d (no RTX VSR)", g_up.out_w, g_up.out_h); return; }
 #endif
     snprintf(out, cap, "%s to %dx%d", up_name[g_upscaler], g_up.out_w, g_up.out_h);
+}
+
+/* the renderer is about to go: forget everything made with it */
+static void up_reset(void)
+{
+    memset(&g_up, 0, sizeof(g_up));           /* the GL objects go with SDL's context */
+    g_up_why[0] = 0;
+    g_up_note[0] = 0;
+#ifdef _WIN32
+    VSR_RELEASE(g_vsr.iv); VSR_RELEASE(g_vsr.vp); VSR_RELEASE(g_vsr.en);
+    VSR_RELEASE(g_vsr.in); VSR_RELEASE(g_vsr.stage);
+    VSR_RELEASE(g_vsr.vctx); VSR_RELEASE(g_vsr.vdev); VSR_RELEASE(g_vsr.ctx); VSR_RELEASE(g_vsr.dev);
+    const int bind = g_vsr.bind, bind_ok = g_vsr.bind_ok;
+    memset(&g_vsr, 0, sizeof(g_vsr));
+    g_vsr.bind = bind; g_vsr.bind_ok = bind_ok;
+#endif
 }
