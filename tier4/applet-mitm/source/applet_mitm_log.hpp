@@ -79,6 +79,7 @@ namespace ams::mitm::applet {
      * closes, so a stream ends at once instead of after the 5 s timeout.
      * Called from the stream loop; UsbByeStop at the end of a session. */
     bool UsbViewerSaidBye();
+    void SetScreenOffNow(bool on);   /* v0.7.12: sftap 4 */
     void UsbByeStop();
 
     /* M86: true if a host program is reading the stream endpoint right now.

@@ -839,6 +839,8 @@ static void ren_swap(SDL_Window **winp, SDL_Renderer **renp, SDL_Texture **texp)
     g_font_tex = NULL; g_font_ren = NULL;
     if (g_ui_disc) SDL_DestroyTexture(g_ui_disc);
     g_ui_disc = NULL; g_ui_disc_ren = NULL;
+    if (g_ui_gear) SDL_DestroyTexture(g_ui_gear);
+    g_ui_gear = NULL; g_ui_gear_ren = NULL;
     up_reset();
     SDL_DestroyRenderer(*renp);
     *renp = NULL;

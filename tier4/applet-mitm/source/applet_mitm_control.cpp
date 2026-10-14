@@ -78,6 +78,12 @@ namespace ams::mitm::applet {
                     R_SUCCEED();
                 }
 
+                Result SetScreenOff(u8 on) {
+                    SetScreenOffNow(on != 0);
+                    LogLine("sftap: screen off while streaming %s (overlay)", on ? "ON" : "OFF");
+                    R_SUCCEED();
+                }
+
                 Result ReloadConfig() {
                     ReloadReleaseConfig();
                     LoadExcluded();

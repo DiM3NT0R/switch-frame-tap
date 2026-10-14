@@ -144,6 +144,29 @@ static float ui_button(SDL_Renderer *ren, float xr, float cx, float y, const cha
     return w;
 }
 
+/* the settings button: a gear in a round button, "Settings" beside it on hover */
+static void ui_gear_button(SDL_Renderer *ren, float xr, float y, SDL_Color bg, int id)
+{
+    const float d = 38, x = xr - d;
+    const int hov = ui_in(x, y, d, d);
+    SDL_Color b = bg;
+    if (hov) { b = UI_SURF3; b.a = bg.a > 230 ? bg.a : 230; }
+    ui_rrect(ren, x, y, d, d, d / 2, b);
+    ui_gear_init(ren);
+    if (g_ui_gear) {
+        SDL_SetTextureColorMod(g_ui_gear, UI_INK.r, UI_INK.g, UI_INK.b);
+        SDL_SetTextureAlphaMod(g_ui_gear, 255);
+        const SDL_FRect g = { x + 8, y + 8, d - 16, d - 16 };
+        SDL_RenderCopyF(ren, g_ui_gear, NULL, &g);
+    }
+    if (hov) {
+        const float tw = text_width("Settings", 14, 1) + 20;
+        ui_rrect(ren, x - tw - 8, y + 6, tw, 26, 13, (SDL_Color){ 21, 24, 30, 230 });
+        text_draw(ren, "Settings", (int)(x - 8 - tw / 2), (int)y + 10, 14, 1, UI_INK, 1);
+    }
+    ui_hit(x, y, d, d, id, 0);
+}
+
 /* a small key hint, like a key cap */
 static float ui_key(SDL_Renderer *ren, float x, float y, const char *k)
 {
@@ -383,7 +406,7 @@ static void ui_overlay(SDL_Renderer *ren, int W, int H)
     SDL_RenderSetScale(ren, sx * k, sy * k);
     g_ui_k = k; g_ui_w = W / k;
     if (g_ui_open) ui_drawer(ren, g_ui_w);
-    else ui_button(ren, g_ui_w - 20, 0, 20, "Settings", (SDL_Color){ 21, 24, 30, 220 }, UI_INK, H_SETTINGS, 0, 1);
+    else ui_gear_button(ren, g_ui_w - 20, 20, (SDL_Color){ 21, 24, 30, 200 }, H_SETTINGS);
     SDL_RenderSetScale(ren, sx, sy);
     SDL_SetRenderDrawBlendMode(ren, old);
 }
@@ -403,7 +426,7 @@ static void menu_draw(SDL_Renderer *ren)
     /* the top bar */
     ui_rrect(ren, 32, 28, 12, 12, 6, UI_ACC);
     text_draw(ren, "Switch Frame Tap", 54, 22, 20, 1, UI_INK, 0);
-    if (!g_ui_open) ui_button(ren, 1248, 0, 20, "Settings", UI_SURF2, UI_INK, H_SETTINGS, 0, 1);
+    if (!g_ui_open) ui_gear_button(ren, 1248, 16, UI_SURF2, H_SETTINGS);
 
     /* what it is waiting for */
     const char *head = "", *l1 = "", *l2 = "";
@@ -458,6 +481,21 @@ static void menu_draw(SDL_Renderer *ren)
         l2 = "";
         hc = (st_reason == 1 || st_reason == 2 || st_reason == 10) ? UI_GOOD : UI_WARN;
     }
+    /* "Paused - a manual, news or the eShop is open": a short title, the
+     * rest as the first line under it */
+    char title[96], rest[96], first[200];
+    snprintf(title, sizeof(title), "%s", head);
+    {
+        char *dash = strstr(title, " - ");
+        if (dash) {
+            *dash = 0;
+            snprintf(rest, sizeof(rest), "%s", dash + 3);
+            if (rest[0] >= 'a' && rest[0] <= 'z') rest[0] = (char)(rest[0] - 32);
+            snprintf(first, sizeof(first), "%s", l1);
+            l2 = first;
+            l1 = rest;
+        }
+    }
 
     /* the card */
     const float cw = 640, cx = 640, card_x = cx - cw / 2, card_y = 150, card_h = 330;
@@ -467,7 +505,11 @@ static void menu_draw(SDL_Renderer *ren)
     const int pulse = (g_menu_state == MENU_WAITING) ? (int)(60 + 50 * (0.5 + 0.5 * sin(t * 3.0))) : 70;
     ui_rrect(ren, cx - 22, card_y + 40, 44, 44, 22, ui_alpha(hc, pulse));
     ui_rrect(ren, cx - 9, card_y + 53, 18, 18, 9, hc);
-    text_draw(ren, head, (int)cx, (int)card_y + 104, 28, 1, UI_INK, 1);
+    {
+        int tpx = 28;
+        while (tpx > 20 && text_width(title, tpx, 1) > cw - 60) tpx -= 2;
+        text_draw(ren, title, (int)cx, (int)card_y + 104 + (28 - tpx) / 2, tpx, 1, UI_INK, 1);
+    }
     int y = (int)card_y + 150;
     y += ui_wrap(ren, l1, (int)cx, y, 17, 0, UI_DIM, (int)cw - 80, 24);
     if (l2[0]) y += ui_wrap(ren, l2, (int)cx, y, 15, 0, UI_FAINT, (int)cw - 80, 22);

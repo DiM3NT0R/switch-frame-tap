@@ -106,6 +106,43 @@ static void ui_disc_init(SDL_Renderer *ren)
     }
 }
 
+/* v0.7.12: the settings icon - a gear (8 teeth, a hole), smooth like the disc */
+static SDL_Texture *g_ui_gear = NULL;
+static SDL_Renderer *g_ui_gear_ren = NULL;
+
+static void ui_gear_init(SDL_Renderer *ren)
+{
+    if (g_ui_gear && g_ui_gear_ren == ren) return;
+    enum { D = 96 };
+    static Uint32 px[D * D];
+    const float c = D / 2.0f, rb = D * 0.34f, rt = D * 0.47f, rh = D * 0.15f;
+    for (int y = 0; y < D; y++)
+        for (int x = 0; x < D; x++) {
+            int in = 0;
+            for (int sy = 0; sy < 4; sy++)
+                for (int sx = 0; sx < 4; sx++) {
+                    const float fx = x + (sx + 0.5f) / 4 - c, fy = y + (sy + 0.5f) / 4 - c;
+                    const float r = sqrtf(fx * fx + fy * fy);
+                    if (r < rh) continue;                      /* the hole */
+                    if (r <= rb) { in++; continue; }           /* the body */
+                    if (r > rt) continue;
+                    /* a tooth: 8 of them, a little narrower at the tip */
+                    float a = atan2f(fy, fx) / (2 * 3.14159265f) * 8.0f;
+                    a -= floorf(a);                            /* 0..1 within one tooth period */
+                    const float half = 0.25f - 0.07f * (r - rb) / (rt - rb);
+                    if (fabsf(a - 0.5f) < half) in++;
+                }
+            px[y * D + x] = ((Uint32)(in * 255 / 16) << 24) | 0xFFFFFFu;
+        }
+    g_ui_gear = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, D, D);
+    g_ui_gear_ren = ren;
+    if (g_ui_gear) {
+        SDL_UpdateTexture(g_ui_gear, NULL, px, D * 4);
+        SDL_SetTextureBlendMode(g_ui_gear, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(g_ui_gear, SDL_ScaleModeLinear);
+    }
+}
+
 static void ui_rrect(SDL_Renderer *ren, float x, float y, float w, float h, float r, SDL_Color c)
 {
     if (w <= 0 || h <= 0) return;

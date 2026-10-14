@@ -8,6 +8,8 @@
  *                            (v0.1.1b: and excluded.txt, on any install)
  *   3  SetAppExcluded(u64 program_id, u8 excluded) - v0.1.1b: the never-attach
  *                            list, sdmc:/config/switch-frame-tap/excluded.txt
+ *   4  SetScreenOff(u8 on) - v0.7.12: "screen off while streaming", now (the
+ *                            overlay keeps config.ini's screen_off in step)
  *
  * It runs on its own server thread, never on vi:u's: nothing a client does
  * here can delay the game's binder traffic. Both commands only touch atomics
@@ -55,6 +57,7 @@ namespace ams::mitm::applet {
     AMS_SF_METHOD_INFO(C, H, 1, Result, SetEnabled, (u8 on), (on)) \
     AMS_SF_METHOD_INFO(C, H, 2, Result, ReloadConfig, (), ()) \
     AMS_SF_METHOD_INFO(C, H, 3, Result, SetAppExcluded, (u64 program_id, u8 excluded), (program_id, excluded)) \
+    AMS_SF_METHOD_INFO(C, H, 4, Result, SetScreenOff, (u8 on), (on)) \
     AMS_SF_METHOD_INFO(C, H, 10, Result, Donate, (u64 size, sf::CopyHandle &&tmem), (size, std::move(tmem))) \
     AMS_SF_METHOD_INFO(C, H, 11, Result, DonateFailed, (u32 rc), (rc))
 

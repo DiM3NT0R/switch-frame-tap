@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include "../../common/sound_patch.hpp"
+#include "../../common/config_ini.hpp"
 
 namespace {
 
@@ -82,6 +83,13 @@ namespace {
         if (!SftapConnect()) { return; }
         const struct { u64 tid; u8 excluded; u8 pad[7]; } in = { tid, static_cast<u8>(excluded ? 1 : 0), {} };
         serviceDispatchIn(&g_sftap, 3, in);
+    }
+
+    /* v0.7.12: screen off while streaming - now (sftap 4); config.ini keeps it */
+    void SftapSetScreenOff(bool on) {
+        if (!SftapConnect()) { return; }
+        const u8 v = on ? 1 : 0;
+        serviceDispatchIn(&g_sftap, 4, v);
     }
 
     void SftapSetEnabled(bool on) {
@@ -230,7 +238,7 @@ namespace {
     class MainGui : public tsl::Gui {
         public:
             tsl::elm::Element *createUI() override {
-                auto *frame = new tsl::elm::OverlayFrame("Switch Frame Tap", "v0.7.12-test3");
+                auto *frame = new tsl::elm::OverlayFrame("Switch Frame Tap", "v0.7.12-test4");
                 auto *list = new tsl::elm::List();
 
                 list->addItem(new tsl::elm::CategoryHeader("Stream to PC"));
@@ -251,6 +259,16 @@ namespace {
                     return false;
                 });
                 list->addItem(m_app);
+                {
+                    std::string v;
+                    const bool on = sftini::Get("screen_off", &v) && v == "1";
+                    auto *scr = new tsl::elm::ToggleListItem("Screen off while streaming", on);
+                    scr->setStateChangedListener([](bool on) {
+                        sftini::Set("screen_off", on ? "1" : "0");
+                        SftapSetScreenOff(on);
+                    });
+                    list->addItem(scr);
+                }
                 list->addItem(new tsl::elm::CustomDrawer([this](tsl::gfx::Renderer *r, s32 x, s32 y, s32 w, s32 h) {
                     r->drawString(m_status.c_str(), false, x + 15, y + 22, 18, r->a(tsl::style::color::ColorText));
                     r->drawString(m_game.c_str(), false, x + 15, y + 46, 16, r->a(tsl::style::color::ColorDescription));
