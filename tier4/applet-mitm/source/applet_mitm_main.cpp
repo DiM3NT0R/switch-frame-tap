@@ -807,13 +807,13 @@ namespace ams {
         /* M76: this line used to print jpg=off before jpg was parsed, and
          * called every build a "read-only observer". The flag dump below is
          * the record of what this boot armed. */
-        mitm::applet::LogLine("applet-mitm v0.7.11-test5: up (grc IPC interceptor %s), built against Atmosphere %d.%d.%d",
+        mitm::applet::LogLine("applet-mitm v0.7.11: up (grc IPC interceptor %s), built against Atmosphere %d.%d.%d",
                               mitm::applet::g_grc_armed ? "ARMED" : "off",
                               ATMOSPHERE_RELEASE_VERSION_MAJOR, ATMOSPHERE_RELEASE_VERSION_MINOR, ATMOSPHERE_RELEASE_VERSION_MICRO);
         {
             const auto api = exosphere::GetApiInfo();
             const u32 hv = hosversionGet();
-            mitm::applet::LogLine("Atmosphere %u.%u.%u, firmware %u.%u.%u (built with Atmosphere %u.%u.%u, tested on firmware 22.5.0)",
+            mitm::applet::LogLine("Atmosphere %u.%u.%u, firmware %u.%u.%u (built with Atmosphere %u.%u.%u, tested on firmware 22.5.0; 23.0.0 by a user)",
                                   api.GetMajorVersion(), api.GetMinorVersion(), api.GetMicroVersion(),
                                   HOSVER_MAJOR(hv), HOSVER_MINOR(hv), HOSVER_MICRO(hv),
                                   ATMOSPHERE_RELEASE_VERSION_MAJOR, ATMOSPHERE_RELEASE_VERSION_MINOR, ATMOSPHERE_RELEASE_VERSION_MICRO);

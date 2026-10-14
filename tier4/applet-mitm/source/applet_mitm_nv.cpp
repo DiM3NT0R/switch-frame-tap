@@ -2733,13 +2733,13 @@ namespace ams::mitm::applet {
         void RunLive(u32 vfd, u32 nvmap_fd, u32 cmd_handle, u32 syncpt, u32 cfg_addr) {
             LogLine("   ==== LIVE MODE (M86): streaming whenever a viewer is reading and a game is running ====");
             /* M98: a release install captures only on the firmware it was
-             * tested on (22.x; v0.7.8: 21.x too, a user's 21.0.1); the debug
-             * reads and engine jobs assume it */
+             * tested on (22.x; v0.7.8: 21.x too, a user's 21.0.1; v0.7.11:
+             * 23.x, a user's 23.0.0); the debug reads and engine jobs assume it */
             {
                 const u32 v = hosversionGet();
-                if (g_release_mode && !g_anyfw_armed && HOSVER_MAJOR(v) != 22 && HOSVER_MAJOR(v) != 21) {
+                if (g_release_mode && !g_anyfw_armed && (HOSVER_MAJOR(v) < 21 || HOSVER_MAJOR(v) > 23)) {
                     g_live_state.store(LiveState_Unsupported, std::memory_order_relaxed);
-                    LogLine("   live: firmware %u.%u.%u is untested (this build: 21.x-22.x) - not streaming. allow_untested_firmware = 1 in config.ini overrides.",
+                    LogLine("   live: firmware %u.%u.%u is untested (this build: 21.x-23.x) - not streaming. allow_untested_firmware = 1 in config.ini overrides.",
                             HOSVER_MAJOR(v), HOSVER_MINOR(v), HOSVER_MICRO(v));
                     VicStage("live:untested_fw");
                     SetViewerReason(ViewerReason_Unsupported);

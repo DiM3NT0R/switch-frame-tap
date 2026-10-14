@@ -22,20 +22,20 @@ the viewer on your PC, start a game.
 - **USB or network**: a USB-C cable in handheld mode, Wi-Fi or LAN when docked.
 - **Game sound** included.
 - **Low latency**: about 45 ms (720p) to 60 ms (1080p) from the game to your PC.
-- **Viewers for Windows and Linux**, plus macOS in the v0.7.11 test builds.
+- **Viewers for Windows, Linux and macOS.**
 - **Record to MP4** with one key, and take **native-resolution screenshots**.
 - **Webcam mode**: the Switch shows up as a USB camera in OBS, Discord, Zoom
   or any camera app.
 - **Optional GPU upscaling** in the viewer (AMD FSR 1, NVIDIA NIS, RTX Video
-  Super Resolution on Windows), in the v0.7.11 test builds.
+  Super Resolution on Windows).
 - **A manager app and an overlay** on the Switch for settings, so you never
   have to edit files.
 
 ## What you need
 
 - A Switch running [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere/releases)
-  (tested on firmware 22.5.0 with Atmosphère 1.11.2)
-- A PC with Windows 10/11 or Linux (or macOS with the test builds)
+  (firmware 21 to 23; tested on 22.5.0 with Atmosphère 1.11.2, users run 23.0.0 with 1.12)
+- A PC with Windows 10/11, Linux or macOS 12+
 - A USB-C cable, or the Switch and the PC on the same network
 
 ## Quick start
@@ -48,6 +48,7 @@ the viewer on your PC, start a game.
    - **Windows:** unzip it and install the USB driver once with
      [Zadig](https://zadig.akeo.ie/) ([how](#install)), then open `SwitchFrameTap.exe`.
    - **Linux:** unpack it and run the install script ([how](#install)).
+   - **macOS:** unzip it, drag the app to Applications, right-click it and choose **Open**.
 3. Plug the Switch into the PC (handheld) or pick **Network** in the viewer
    (press **Tab**), then start a game.
 
@@ -139,7 +140,7 @@ animation.*
 | Video | H.264 from the Switch's NVENC, constant QP 20 (P frames 22, v0.6.0), keyframe every 60 frames; 1080p ~80 Mbps in a fast race, 720p about half; the manager's Medium / Low quality roughly half / a third of that |
 | Latency | 720p: ~20-23 ms on the console (game present -> sent) + ~21-24 ms on the PC (arrival -> on screen); 1080p: ~34 + ~25 ms |
 | Reliability | 0 lost / 0 undecodable frames in every run since M84; 0 stale or torn frames (M89) |
-| Console | Mariko, firmware 22.5.0, Atmosphère 1.11.2 (the only one tested) |
+| Console | Mariko, firmware 22.5.0, Atmosphère 1.11.2 (the author's); users report a Switch Lite on 23.0.0 with Atmosphère 1.12.0 |
 
 For comparison, [SysDVR](https://github.com/exelix11/SysDVR), the established
 tool, is capped at 720p30 for game video, because it reads the system's own
@@ -182,7 +183,7 @@ manager app:
 
 | | |
 |---|---|
-| A Switch running **Atmosphère** custom firmware | [Atmosphère releases](https://github.com/Atmosphere-NX/Atmosphere/releases) - tested with 1.11.2 on firmware 22.5.0 (Mariko); users report 22.0.0 (Atmosphère 1.11.1) and 21.0.1 working. New to custom firmware: the [NH Switch Guide](https://switch.hacks.guide/). Keep a NAND backup. |
+| A Switch running **Atmosphère** custom firmware | [Atmosphère releases](https://github.com/Atmosphere-NX/Atmosphere/releases) - tested with 1.11.2 on firmware 22.5.0 (Mariko); users report 23.0.0 (Atmosphère 1.12.0, since v0.7.11), 22.0.0 (Atmosphère 1.11.1) and 21.0.1 working. New to custom firmware: the [NH Switch Guide](https://switch.hacks.guide/). Keep a NAND backup. |
 | The **homebrew menu** | Comes with Atmosphère (`hbmenu.nro`); also [nx-hbmenu releases](https://github.com/switchbrew/nx-hbmenu/releases). It opens the manager app. |
 | A **Windows or Linux PC** | Windows 10/11: the viewer zip, plus the WinUSB driver installed once with [Zadig](https://zadig.akeo.ie/). Linux: `libusb`, `SDL2`, `libavcodec` - one `apt install` line. Both [below](#install). In [webcam mode](#webcam-mode), no viewer or driver: OBS reads it as a camera. |
 | A **USB-C cable**, or a **network** | USB 2.0 is plenty; over USB the Switch stays in handheld (the dock owns the port). [Network streaming](#network-streaming-play-docked) needs no cable and works docked: Wi-Fi or the dock's LAN port, the PC on the same network. |
@@ -206,7 +207,7 @@ Nothing else: no other sysmodule, no sigpatches, no capture card.
 This drives hardware engines directly; a bug can freeze the console (see
 [If something goes wrong](#if-something-goes-wrong)).
 
-**1. The Switch.** Download `switch-frame-tap-0.7.10-switch.zip` from the
+**1. The Switch.** Download `switch-frame-tap-0.7.11-switch.zip` from the
 [release](https://github.com/TomasUribe/switch-frame-tap/releases) and unzip
 it onto the root of the SD card (card reader or Hekate USB mass storage). It
 contains:
@@ -220,15 +221,20 @@ switch/.overlays/switch-frame-tap.ovl         the overlay (Tesla / Ultrahand)
 Reboot. Updating later is the same: unzip over it; your settings are kept.
 
 **2a. The PC viewer on Windows.** Unzip
-`switch-frame-tap-0.7.10-windows-viewer.zip` anywhere. Once, with the Switch
+`switch-frame-tap-0.7.11-windows-viewer.zip` anywhere. Once, with the Switch
 connected and running: open [Zadig](https://zadig.akeo.ie/), **Options ->
 List All Devices**, pick **Switch Frame Tap** (USB ID 1209 5F1E - make sure
 it is that one), choose **WinUSB** and **Install Driver**. Then double-click
 `SwitchFrameTap.exe` (keep the two DLLs next to it; the zip is 2 MB). Windows may warn about an
 unknown publisher: **More info -> Run anyway**.
 
-**2b. The PC viewer on Linux.** Install the build dependencies and the udev
-rule (lets the viewer open the Switch without sudo), then the desktop app:
+**2b. The PC viewer on Linux** (any distribution - Ubuntu, Fedora, Arch,
+Bazzite, SteamOS - x86_64). Unpack `switch-frame-tap-0.7.11-linux.tar.gz` and
+run `./install.sh`: it puts **Switch Frame Tap** in the applications menu and
+prints the one `sudo` command that installs the USB rule (lets the viewer open
+the Switch). It is a single program with FFmpeg, SDL 2 and libusb built in.
+
+To build it from source instead (Ubuntu/Debian):
 
 ```bash
 sudo apt install build-essential libusb-1.0-0-dev libsdl2-dev libavcodec-dev libavutil-dev libavformat-dev
@@ -237,11 +243,13 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 bash tools/raw-recv/install-launcher.sh
 ```
 
-That puts a double-clickable **Switch Frame Tap** on the desktop and in the
-applications menu. The release also has
-`switch-frame-tap-0.7.10-linux-viewer.tar.gz` with the same files.
+**2c. The PC viewer on macOS** (v0.7.11; Apple Silicon or Intel). Unzip
+`switch-frame-tap-0.7.11-macos-arm64.zip` (Apple Silicon) or `-x86_64.zip`
+(Intel) and drag **Switch Frame Tap.app** to Applications. It is not signed by
+Apple: the first time, right-click it and choose **Open**. No USB driver is
+needed. Thanks to proconsule54 and DiM3NT0R for the first macOS builds.
 
-On both, the viewer opens a window that says what it is waiting for (the
+On all of them, the viewer opens a window that says what it is waiting for (the
 Switch, its USB driver, or a game) and lists its keys; the same screen comes
 back whenever the game is closed or not on screen (the HOME menu) instead of
 a frozen frame. It reconnects on its own and closes only when you close it. It plays the game's sound on the
@@ -483,7 +491,7 @@ Please attach both to a bug report.
 ```bash
 git clone --recursive https://github.com/Atmosphere-NX/Atmosphere ref/Atmosphere
 git clone https://github.com/WerWolv/libtesla ref/libtesla
-bash tools/make_release.sh 0.7.10      # -> dist/switch-frame-tap-0.7.10-{switch.zip,linux-viewer.tar.gz,windows-viewer.zip}
+bash tools/make_release.sh 0.7.11      # -> dist/switch-frame-tap-0.7.11-{switch.zip,linux.tar.gz,windows-viewer.zip} (macOS: GitHub Actions)
 bash tools/run_pc_tests.sh             # every check that needs no console
 ```
 
@@ -524,7 +532,7 @@ to `sdmc:/applet-mitm.log` - how every development run was done.
 - **Webcam mode:** picture only; the H.264 camera has higher latency in OBS
   than the viewer, the uncompressed one tops out at 720p25 (USB 2.0);
   switching modes needs a restart.
-- **PC viewer: Windows and Linux** (x86_64). No macOS viewer yet. On Windows
+- **PC viewer: Windows, Linux (x86_64) and macOS 12+.** On Windows
   the driver needs Zadig once, as with SysDVR.
 - **Cheats:** the stream reads the game directly, like a debugger. When
   Atmosphère's cheat engine already holds the game (cheats loaded for it),
@@ -545,9 +553,12 @@ to `sdmc:/applet-mitm.log` - how every development run was done.
   of the console's applet memory. Since v0.7.10 Switch Frame Tap holds none
   of it while you are not streaming, and when a game opens its manual or
   news while you stream, the stream pauses first and comes back when you
-  close it. Opened **from the HOME menu while streaming**, they still crash
-  (2210-1024): disconnect the viewer first.
-- **One console tested.** Mariko, firmware 22.5.0, Atmosphère 1.11.2.
+  close it. Since v0.7.11, pressing **HOME** while streaming ends the stream
+  and gives its memory back (it comes back when the game is on screen
+  again), so they also open from the HOME menu.
+- **Few consoles tested.** The author's Mariko (firmware 22.5.0, Atmosphère
+  1.11.2), plus users' reports: a Switch Lite on 23.0.0 (Atmosphère 1.12.0),
+  22.0.0 and 21.0.1.
 
 ## If something goes wrong
 
@@ -759,6 +770,10 @@ dock works over the network since v0.7.0, with the quality adapting to the link.
 | Recording from the viewer (MP4: the console's H.264 untouched + AAC) | **done, on hardware** (v0.5.0) |
 | Webcam mode (UVC 1.5 H.264 camera, 1080p/720p60) | **done, on hardware** (v0.4.0) |
 | Webcam for any camera app (uncompressed NV12, 720p25 / 432p60) | **done, on hardware** (v0.7.7) |
+| Firmware 23 (built against Atmosphère 1.12); macOS viewer; Linux viewer for any distribution | **done** (v0.7.11; 23.0.0 and macOS confirmed by users) |
+| HOME menu while streaming (browser applets get their memory back), USB released while streaming is off | **done, on hardware** (v0.7.11) |
+| Viewer: one-thread low-delay decode, vsync toggle, GPU upscaling (FSR 1, NIS, RTX VSR on Windows) | **done, on hardware** (v0.7.11) |
+| Hardware decode in the viewer (D3D11VA, VideoToolbox) | next |
 | USB 3.0 lossless (handheld) | parked: the link still trains to High Speed |
 | Home menu and system overlays | not possible through any route found |
 

@@ -33,7 +33,7 @@
 
 namespace {
 
-    constexpr const char *AppVersion  = "0.7.11-test5";
+    constexpr const char *AppVersion  = "0.7.11";
     constexpr u64 ModuleTid           = 0x0100000000000C20ull;
     constexpr const char *ModuleDir   = "sdmc:/atmosphere/contents/0100000000000C20";
     constexpr const char *ModuleNsp   = "sdmc:/atmosphere/contents/0100000000000C20/exefs.nsp";
@@ -497,9 +497,9 @@ namespace {
                 "Open the viewer on the PC and connect the USB-C cable." });
             rows.push_back({ Kind::Info, "Firmware", [this] {
                     char b[64];
-                    std::snprintf(b, sizeof(b), "%u.%u.%u%s", HOSVER_MAJOR(fw), HOSVER_MINOR(fw), HOSVER_MICRO(fw), (HOSVER_MAJOR(fw) == 22 || HOSVER_MAJOR(fw) == 21) ? "" : " - untested");
+                    std::snprintf(b, sizeof(b), "%u.%u.%u%s", HOSVER_MAJOR(fw), HOSVER_MINOR(fw), HOSVER_MICRO(fw), (HOSVER_MAJOR(fw) >= 21 && HOSVER_MAJOR(fw) <= 23) ? "" : " - untested");
                     return std::string(b);
-                }, [this] { return (HOSVER_MAJOR(fw) == 22 || HOSVER_MAJOR(fw) == 21) ? ColText : ColWarn; }, nullptr,
+                }, [this] { return (HOSVER_MAJOR(fw) >= 21 && HOSVER_MAJOR(fw) <= 23) ? ColText : ColWarn; }, nullptr,
                 "This version was tested on firmware 22.x and 21.x (Atmosphere 1.11). On other firmware the sysmodule does not "
                 "stream unless 'Allow untested firmware' is on." });
             rows.push_back({ Kind::Info, "Atmosphere", [this] {
