@@ -27,6 +27,18 @@ static const char *const up_key[UP_COUNT] = { "off", "fsr", "nis" };
 #endif
 static int g_upscaler = UP_OFF;          /* the choice (viewer.ini: upscaler=) */
 static char g_up_note[72] = "";         /* why it is not available, if not */
+static char g_up_why[40] = "";          /* why the last frame was not upscaled (the overlay) */
+
+/* the last frame was drawn the plain way: say why, on the overlay and once in the log */
+static int up_skip(const char *why, long hr)
+{
+    if (strcmp(why, g_up_why) != 0) {
+        snprintf(g_up_why, sizeof(g_up_why), "%s", why);
+        if (hr) fprintf(stderr, "upscaler: %s (0x%08lx)\n", why, (unsigned long)hr);
+        else fprintf(stderr, "upscaler: %s\n", why);
+    }
+    return 0;
+}
 
 static void up_set_by_key(const char *k)
 {
@@ -486,9 +498,11 @@ static int vsr_setup(int W, int H, int vw, int vh)
         td.Width = (UINT)W; td.Height = (UINT)H; td.MipLevels = 1; td.ArraySize = 1;
         td.Format = DXGI_FORMAT_NV12; td.SampleDesc.Count = 1;
         td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        if (FAILED(ID3D11Device_CreateTexture2D(g_vsr.dev, &td, NULL, &g_vsr.in))) return 0;
+        HRESULT hr = ID3D11Device_CreateTexture2D(g_vsr.dev, &td, NULL, &g_vsr.in);
+        if (FAILED(hr)) return up_skip("failed: NV12 texture", hr);
         td.Usage = D3D11_USAGE_STAGING; td.BindFlags = 0; td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        if (FAILED(ID3D11Device_CreateTexture2D(g_vsr.dev, &td, NULL, &g_vsr.stage))) return 0;
+        hr = ID3D11Device_CreateTexture2D(g_vsr.dev, &td, NULL, &g_vsr.stage);
+        if (FAILED(hr)) return up_skip("failed: upload texture", hr);
         g_vsr.in_w = W; g_vsr.in_h = H;
     }
     D3D11_VIDEO_PROCESSOR_CONTENT_DESC cd = {0};
@@ -498,11 +512,14 @@ static int vsr_setup(int W, int H, int vw, int vh)
     cd.OutputFrameRate.Numerator = 60; cd.OutputFrameRate.Denominator = 1;
     cd.OutputWidth = (UINT)vw; cd.OutputHeight = (UINT)vh;
     cd.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
-    if (FAILED(ID3D11VideoDevice_CreateVideoProcessorEnumerator(g_vsr.vdev, &cd, &g_vsr.en)) ||
-        FAILED(ID3D11VideoDevice_CreateVideoProcessor(g_vsr.vdev, g_vsr.en, 0, &g_vsr.vp))) return 0;
+    HRESULT hr = ID3D11VideoDevice_CreateVideoProcessorEnumerator(g_vsr.vdev, &cd, &g_vsr.en);
+    if (FAILED(hr)) return up_skip("failed: processor sizes", hr);
+    hr = ID3D11VideoDevice_CreateVideoProcessor(g_vsr.vdev, g_vsr.en, 0, &g_vsr.vp);
+    if (FAILED(hr)) return up_skip("failed: video processor", hr);
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd = {0};
     ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-    if (FAILED(ID3D11VideoDevice_CreateVideoProcessorInputView(g_vsr.vdev, (ID3D11Resource *)g_vsr.in, g_vsr.en, &ivd, &g_vsr.iv))) return 0;
+    hr = ID3D11VideoDevice_CreateVideoProcessorInputView(g_vsr.vdev, (ID3D11Resource *)g_vsr.in, g_vsr.en, &ivd, &g_vsr.iv);
+    if (FAILED(hr)) return up_skip("failed: input view", hr);
     /* the stream: BT.709 limited range in, full-range RGB out */
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE in_cs = {0}, out_cs = {0};
     in_cs.YCbCr_Matrix = 1;
@@ -513,7 +530,7 @@ static int vsr_setup(int W, int H, int vw, int vh)
     ID3D11VideoContext_VideoProcessorSetStreamFrameFormat(g_vsr.vctx, g_vsr.vp, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
     ID3D11VideoContext_VideoProcessorSetStreamAutoProcessingMode(g_vsr.vctx, g_vsr.vp, 0, FALSE);
     struct { UINT version, method, enable; } ext = { 0x1, 0x2, 1 };    /* NVIDIA: Super Resolution on */
-    const HRESULT hr = ID3D11VideoContext_VideoProcessorSetStreamExtension(g_vsr.vctx, g_vsr.vp, 0, &up_nv_ppe, sizeof(ext), &ext);
+    hr = ID3D11VideoContext_VideoProcessorSetStreamExtension(g_vsr.vctx, g_vsr.vp, 0, &up_nv_ppe, sizeof(ext), &ext);
     if (g_vsr.vsr != (SUCCEEDED(hr) ? 1 : -1))
         fprintf(stderr, "upscaler: RTX Video Super Resolution %s (0x%08lx)\n", SUCCEEDED(hr) ? "on" : "refused by the driver", (unsigned long)hr);
     g_vsr.vsr = SUCCEEDED(hr) ? 1 : -1;
@@ -523,21 +540,19 @@ static int vsr_setup(int W, int H, int vw, int vh)
 
 static int vsr_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesize[3], int W, int H)
 {
-    if (!vsr_init(ren)) return 0;
+    if (!vsr_init(ren)) return up_skip("unavailable, press U", 0);
     int ow = 0, oh = 0;
     SDL_GetRendererOutputSize(ren, &ow, &oh);
-    if (W <= 0 || H <= 0 || ow <= 0 || oh <= 0 || (W & 1) || (H & 1)) return 0;
+    if (W <= 0 || H <= 0 || ow <= 0 || oh <= 0 || (W & 1) || (H & 1)) return up_skip("odd picture size", 0);
     int vw, vh;
     if ((long)ow * H > (long)oh * W) { vh = oh; vw = (int)((long)oh * W / H); } else { vw = ow; vh = (int)((long)ow * H / W); }
-    if (vw <= W && vh <= H) return 0;
+    if (vw <= W && vh <= H) return up_skip("window too small", 0);
     const int vx = (ow - vw) / 2, vy = (oh - vh) / 2;
-    if (!vsr_setup(W, H, vw, vh)) {
-        snprintf(g_vsr.note, sizeof(g_vsr.note), "the video processor would not start");
-        return 0;
-    }
+    if (!vsr_setup(W, H, vw, vh)) return 0;
     /* the planes into NV12 (Y, then U and V interleaved) */
     D3D11_MAPPED_SUBRESOURCE m;
-    if (FAILED(ID3D11DeviceContext_Map(g_vsr.ctx, (ID3D11Resource *)g_vsr.stage, 0, D3D11_MAP_WRITE, 0, &m))) return 0;
+    HRESULT hr = ID3D11DeviceContext_Map(g_vsr.ctx, (ID3D11Resource *)g_vsr.stage, 0, D3D11_MAP_WRITE, 0, &m);
+    if (FAILED(hr)) return up_skip("failed: upload", hr);
     uint8_t *dst = (uint8_t *)m.pData;
     for (int y = 0; y < H; y++) memcpy(dst + (size_t)y * m.RowPitch, data[0] + (size_t)y * linesize[0], (size_t)W);
     uint8_t *uv = dst + (size_t)m.RowPitch * H;
@@ -554,19 +569,19 @@ static int vsr_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesiz
     SDL_RenderFlush(ren);
     ID3D11RenderTargetView *rtv = NULL;
     ID3D11DeviceContext_OMGetRenderTargets(g_vsr.ctx, 1, &rtv, NULL);
-    if (!rtv) return 0;
+    if (!rtv) return up_skip("failed: no back buffer", 0);
     ID3D11Resource *bb = NULL;
     ID3D11View_GetResource((ID3D11View *)rtv, &bb);
     ID3D11RenderTargetView_Release(rtv);
-    if (!bb) return 0;
+    if (!bb) return up_skip("failed: no back buffer", 0);
     /* the output view is made and let go every frame: holding the back buffer
      * would stop SDL from resizing it */
     D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ovd = {0};
     ovd.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
     ID3D11VideoProcessorOutputView *ov = NULL;
-    HRESULT hr = ID3D11VideoDevice_CreateVideoProcessorOutputView(g_vsr.vdev, bb, g_vsr.en, &ovd, &ov);
+    hr = ID3D11VideoDevice_CreateVideoProcessorOutputView(g_vsr.vdev, bb, g_vsr.en, &ovd, &ov);
     ID3D11Resource_Release(bb);
-    if (FAILED(hr) || !ov) return 0;
+    if (FAILED(hr) || !ov) return up_skip("failed: output view", hr);
     RECT src = { 0, 0, W, H }, dstr = { vx, vy, vx + vw, vy + vh };
     ID3D11VideoContext_VideoProcessorSetStreamSourceRect(g_vsr.vctx, g_vsr.vp, 0, TRUE, &src);
     ID3D11VideoContext_VideoProcessorSetStreamDestRect(g_vsr.vctx, g_vsr.vp, 0, TRUE, &dstr);
@@ -576,7 +591,8 @@ static int vsr_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesiz
     st.pInputSurface = g_vsr.iv;
     hr = ID3D11VideoContext_VideoProcessorBlt(g_vsr.vctx, g_vsr.vp, ov, 0, 1, &st);
     ID3D11VideoProcessorOutputView_Release(ov);
-    if (FAILED(hr)) return 0;
+    if (FAILED(hr)) return up_skip("failed: video processor blit", hr);
+    g_up_why[0] = 0;
     g_up.active = 1; g_up.out_w = vw; g_up.out_h = vh;
     return 1;
 }
@@ -604,14 +620,15 @@ static int up_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesize
 #ifdef _WIN32
     if (mode == UP_RTX) return vsr_draw(ren, data, linesize, W, H);
 #endif
-    if (mode == UP_OFF || !up_init(ren)) return 0;
-    if (mode == UP_NIS && !g_up.nis_ok) return 0;
+    if (mode == UP_OFF) { g_up_why[0] = 0; return 0; }
+    if (!up_init(ren)) return up_skip("unavailable, press U", 0);
+    if (mode == UP_NIS && !g_up.nis_ok) return up_skip("NIS unavailable", 0);
     int ow = 0, oh = 0;
     SDL_GetRendererOutputSize(ren, &ow, &oh);
     if (W <= 0 || H <= 0 || ow <= 0 || oh <= 0) return 0;
     int vw, vh;                                   /* the picture on screen, letterboxed */
     if ((long)ow * H > (long)oh * W) { vh = oh; vw = (int)((long)oh * W / H); } else { vw = ow; vh = (int)((long)ow * H / W); }
-    if (vw <= W && vh <= H) return 0;             /* not bigger than the stream: nothing to upscale */
+    if (vw <= W && vh <= H) return up_skip("window too small", 0);
     const int vx = (ow - vw) / 2, vy = (oh - vh) / 2;
 
     SDL_RenderFlush(ren);
@@ -696,6 +713,7 @@ static int up_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesize
         up_glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     up_restore(&sv);
+    g_up_why[0] = 0;
     g_up.active = 1; g_up.out_w = vw; g_up.out_h = vh;
     return 1;
 }
@@ -740,7 +758,7 @@ static void up_describe(SDL_Renderer *ren, char *out, size_t cap)
 /* the overlay's line */
 static void up_hud_text(char *out, size_t cap)
 {
-    if (!g_up.active) { snprintf(out, cap, "%s", g_upscaler == UP_OFF ? "off (U)" : "not needed here"); return; }
+    if (!g_up.active) { snprintf(out, cap, "%s", g_upscaler == UP_OFF ? "off (U)" : g_up_why[0] ? g_up_why : "-"); return; }
 #ifdef _WIN32
     if (g_upscaler == UP_RTX && g_vsr.vsr < 0) { snprintf(out, cap, "plain, to %dx%d (no RTX VSR)", g_up.out_w, g_up.out_h); return; }
 #endif
