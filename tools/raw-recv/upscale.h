@@ -456,6 +456,7 @@ static const GUID up_nv_ppe = { 0xd43ce1b3, 0x1f4b, 0x48ac, { 0xba, 0xee, 0xc3, 
 static struct {
     int tried, ok, vsr;                    /* vsr: the driver took the Super Resolution switch */
     char note[72];
+    char gpu[128];                         /* the adapter's name */
     ID3D11Device *dev;
     ID3D11DeviceContext *ctx;
     ID3D11VideoDevice *vdev;
@@ -465,6 +466,7 @@ static struct {
     ID3D11Texture2D *stage, *in;
     ID3D11VideoProcessorInputView *iv;
     int in_w, in_h, vp_w, vp_h;
+    int bind, bind_ok;                     /* which input bind flags this driver takes */
 } g_vsr;
 
 static int vsr_init(SDL_Renderer *ren)
@@ -480,7 +482,22 @@ static int vsr_init(SDL_Renderer *ren)
         return 0;
     }
     g_vsr.ok = 1;
-    fprintf(stderr, "upscaler: Direct3D 11 video processor ready\n");
+    {   /* which GPU SDL drew with: on a laptop, Windows may pick the integrated one */
+        static const GUID iid_dxgi_device = { 0x54ec77fa, 0x1377, 0x44e6, { 0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c } };
+        IDXGIDevice *dd = NULL;
+        IDXGIAdapter *ad = NULL;
+        DXGI_ADAPTER_DESC desc;
+        char name[128] = "?";
+        if (SUCCEEDED(ID3D11Device_QueryInterface(g_vsr.dev, &iid_dxgi_device, (void **)&dd))) {
+            if (SUCCEEDED(IDXGIDevice_GetAdapter(dd, &ad))) {
+                if (SUCCEEDED(IDXGIAdapter_GetDesc(ad, &desc))) WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name), NULL, NULL);
+                IDXGIAdapter_Release(ad);
+            }
+            IDXGIDevice_Release(dd);
+        }
+        snprintf(g_vsr.gpu, sizeof(g_vsr.gpu), "%s", name);
+    }
+    fprintf(stderr, "upscaler: Direct3D 11 video processor ready (%s)\n", g_vsr.gpu);
     return 1;
 }
 
@@ -497,11 +514,8 @@ static int vsr_setup(int W, int H, int vw, int vh)
         D3D11_TEXTURE2D_DESC td = {0};
         td.Width = (UINT)W; td.Height = (UINT)H; td.MipLevels = 1; td.ArraySize = 1;
         td.Format = DXGI_FORMAT_NV12; td.SampleDesc.Count = 1;
-        td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        HRESULT hr = ID3D11Device_CreateTexture2D(g_vsr.dev, &td, NULL, &g_vsr.in);
-        if (FAILED(hr)) return up_skip("failed: NV12 texture", hr);
-        td.Usage = D3D11_USAGE_STAGING; td.BindFlags = 0; td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        hr = ID3D11Device_CreateTexture2D(g_vsr.dev, &td, NULL, &g_vsr.stage);
+        td.Usage = D3D11_USAGE_STAGING; td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        HRESULT hr = ID3D11Device_CreateTexture2D(g_vsr.dev, &td, NULL, &g_vsr.stage);
         if (FAILED(hr)) return up_skip("failed: upload texture", hr);
         g_vsr.in_w = W; g_vsr.in_h = H;
     }
@@ -516,10 +530,29 @@ static int vsr_setup(int W, int H, int vw, int vh)
     if (FAILED(hr)) return up_skip("failed: processor sizes", hr);
     hr = ID3D11VideoDevice_CreateVideoProcessor(g_vsr.vdev, g_vsr.en, 0, &g_vsr.vp);
     if (FAILED(hr)) return up_skip("failed: video processor", hr);
+    UINT fmt = 0;
+    ID3D11VideoProcessorEnumerator_CheckVideoProcessorFormat(g_vsr.en, DXGI_FORMAT_NV12, &fmt);
+    if (!(fmt & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT)) return up_skip("failed: no NV12 input", 0);
+    /* the NV12 texture the processor reads: drivers differ in the bind flags
+     * they accept for it, so try the usual ones (the first that works is kept) */
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd = {0};
     ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-    hr = ID3D11VideoDevice_CreateVideoProcessorInputView(g_vsr.vdev, (ID3D11Resource *)g_vsr.in, g_vsr.en, &ivd, &g_vsr.iv);
-    if (FAILED(hr)) return up_skip("failed: input view", hr);
+    static const UINT binds[] = { D3D11_BIND_DECODER, D3D11_BIND_RENDER_TARGET, 0,
+                                  D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE };
+    for (int i = g_vsr.bind_ok ? g_vsr.bind : 0; i < (int)(sizeof(binds) / sizeof(binds[0])) && !g_vsr.iv; i++) {
+        VSR_RELEASE(g_vsr.in);
+        D3D11_TEXTURE2D_DESC td = {0};
+        td.Width = (UINT)W; td.Height = (UINT)H; td.MipLevels = 1; td.ArraySize = 1;
+        td.Format = DXGI_FORMAT_NV12; td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = binds[i];
+        hr = ID3D11Device_CreateTexture2D(g_vsr.dev, &td, NULL, &g_vsr.in);
+        if (SUCCEEDED(hr))
+            hr = ID3D11VideoDevice_CreateVideoProcessorInputView(g_vsr.vdev, (ID3D11Resource *)g_vsr.in, g_vsr.en, &ivd, &g_vsr.iv);
+        if (!g_vsr.bind_ok)
+            fprintf(stderr, "upscaler: NV12 input, bind flags 0x%x: %s (0x%08lx)\n", binds[i], SUCCEEDED(hr) ? "ok" : "refused", (unsigned long)hr);
+        if (SUCCEEDED(hr)) { g_vsr.bind = i; g_vsr.bind_ok = 1; }
+    }
+    if (!g_vsr.iv) return up_skip("failed: input view", hr);
     /* the stream: BT.709 limited range in, full-range RGB out */
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE in_cs = {0}, out_cs = {0};
     in_cs.YCbCr_Matrix = 1;
@@ -735,7 +768,7 @@ static void up_describe(SDL_Renderer *ren, char *out, size_t cap)
             else
                 snprintf(out, cap, "RTX VSR unavailable: %s  (U)", g_vsr.note);
         } else {
-            snprintf(out, cap, "Upscaling: RTX Video Super Resolution  (U) - on in the NVIDIA app too");
+            snprintf(out, cap, "Upscaling: RTX VSR on %.60s  (U)", g_vsr.gpu);
         }
         return;
     }
