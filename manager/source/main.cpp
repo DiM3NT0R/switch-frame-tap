@@ -33,7 +33,7 @@
 
 namespace {
 
-    constexpr const char *AppVersion  = "0.7.12-test2";
+    constexpr const char *AppVersion  = "0.7.12-test3";
     constexpr u64 ModuleTid           = 0x0100000000000C20ull;
     constexpr const char *ModuleDir   = "sdmc:/atmosphere/contents/0100000000000C20";
     constexpr const char *ModuleNsp   = "sdmc:/atmosphere/contents/0100000000000C20/exefs.nsp";
@@ -210,6 +210,7 @@ namespace {
         bool detach_home = true;  /* v0.7.11 (PR #13): end the stream on HOME; kept when saving */
         bool screen_off = false;  /* v0.7.12: the console's screen dark while streaming */
         std::string early = "1";  /* v0.7.12: early_collect (1 / 0 / ab); kept when saving */
+        std::string boost = "0";  /* v0.7.12: cpu_boost (0 / 1 / ab); kept when saving */
         int conn = 0;           /* v0.7: connection - 0 USB (PC viewer), 1 USB webcam, 2 (v0.7.7) USB webcam NV12, 3 network; from the next boot */
     };
 
@@ -256,6 +257,7 @@ namespace {
         if (IniGet(ini, "detach_on_home", &v)) { s.detach_home = v != "0"; }
         if (IniGet(ini, "screen_off", &v)) { s.screen_off = v == "1"; }
         if (IniGet(ini, "early_collect", &v) && (v == "0" || v == "1" || v == "ab")) { s.early = v; }
+        if (IniGet(ini, "cpu_boost", &v) && (v == "0" || v == "1" || v == "ab")) { s.boost = v; }
         if (IniGet(ini, "audio", &v)) { s.audio = v != "0"; }
         /* the v0.4-v0.7 keys first, then the one that replaced them */
         if (IniGet(ini, "usb_mode", &v) && v == "webcam") { s.conn = 1; }
@@ -300,6 +302,8 @@ namespace {
             "screen_off = %d\n"
             "# early_collect: 1 = send a finished 1080p frame without waiting for the next one | 0 = the old way | ab = test both\n"
             "early_collect = %s\n"
+            "# cpu_boost: 1 = the CPU at 1785 MHz while streaming (faster frame copy, more battery) | 0 = leave it | ab = test both\n"
+            "cpu_boost = %s\n"
             "# audio: 1 = send the game's sound to the PC viewer\n"
             "audio = %d\n"
             "# connection: usb (the PC viewer over USB) | webcam (a USB camera for OBS; no sound) |\n"
@@ -307,7 +311,7 @@ namespace {
             "#             network (the PC viewer over Wi-Fi or the dock's LAN port - play docked). Read at boot.\n"
             "connection = %s\n",
             QualityKeys[s.quality], KeyframeFrames[s.keyframe], s.cap720 ? "720" : "1080",
-            DelaySeconds[s.delay], s.any_fw ? 1 : 0, s.shot ? 1 : 0, s.shot_combo, custom, s.shot_album ? "album" : "app", s.detach_home ? 1 : 0, s.screen_off ? 1 : 0, s.early.c_str(),
+            DelaySeconds[s.delay], s.any_fw ? 1 : 0, s.shot ? 1 : 0, s.shot_combo, custom, s.shot_album ? "album" : "app", s.detach_home ? 1 : 0, s.screen_off ? 1 : 0, s.early.c_str(), s.boost.c_str(),
             s.audio ? 1 : 0, ConnKeys[s.conn]);
         std::fclose(f);
         return true;

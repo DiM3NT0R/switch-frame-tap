@@ -210,6 +210,21 @@ namespace ams::mitm::applet {
         return R_SUCCEEDED(rc);
     }
 
+    bool ClockSetRate(u32 pcv_module, u32 hz) {
+        Service clk = {};
+        SmUse sm_clk_set;
+        if (R_FAILED(smGetService(std::addressof(clk), "clkrst"))) { return false; }
+        const struct { u32 module; u32 unk; } in = { pcv_module, 3 };
+        Service sess = {};
+        ::Result rc = serviceDispatchIn(std::addressof(clk), 0, in, .out_num_objects = 1, .out_objects = std::addressof(sess));
+        if (R_SUCCEEDED(rc)) {
+            rc = serviceDispatchIn(std::addressof(sess), 7, hz);   /* SetClockRate */
+            serviceClose(std::addressof(sess));
+        }
+        serviceClose(std::addressof(clk));
+        return R_SUCCEEDED(rc);
+    }
+
     void ClockSurvey(const char *label) {
         Service clk = {};
         SmUse sm_clk_212;   /* v0.7.10: sm only while needed */

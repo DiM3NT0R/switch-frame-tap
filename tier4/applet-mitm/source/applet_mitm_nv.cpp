@@ -1470,6 +1470,7 @@ namespace ams::mitm::applet {
     constinit std::atomic<u32> g_queue_fence_n{0};
     constinit bool g_nvab_armed = false;
     constinit u32 g_early_collect = 1;
+    constinit u32 g_cpu_boost = 0;
     constinit std::atomic<u32> g_queue_transform{0};
     constinit std::atomic<u32> g_queue_crop_wh{0};
     constinit std::atomic<u64> g_queue_fence[4] = {};
@@ -6614,6 +6615,17 @@ namespace ams::mitm::applet {
             u64 ab_age_sum = 0, ab_age_max = 0;
             u32 ab_age_n = 0, early_collects = 0;
             u64 ec_t0 = armTicksToNs(armGetSystemTick());
+            /* v0.7.12: where a frame's console age goes, per log window -
+             * present -> copied (queue + GPU fence + the copy), -> submitted
+             * (VIC, setup), -> noticed encoded, -> sent */
+            u64 sp_copied = 0, sp_submit = 0, sp_enc = 0, sp_sent = 0;
+            u32 sp_n = 0;
+            /* v0.7.12: the CPU boost experiment - the clock to give back */
+            u32 cpu_hz0 = 0;
+            bool cpu_boosted = false;
+            u64 cb_read = 0; u32 cb_n = 0;
+            if (pipe || g_cpu_boost != 0) { static_cast<void>(ClockRateOf(PcvDevice_Cpu, std::addressof(cpu_hz0))); }
+            ON_SCOPE_EXIT { if (cpu_boosted && cpu_hz0 != 0) { static_cast<void>(ClockSetRate(PcvDevice_Cpu, cpu_hz0)); } };
             /* true: stop the loop (why/end set) */
             auto collect = [&](InFlight &f) -> bool {
                 f.active = false;
@@ -6706,6 +6718,9 @@ namespace ams::mitm::applet {
                 const u64 t5 = armTicksToNs(armGetSystemTick());
                 const u64 age = (f.present_ns != 0 && t5 > f.present_ns) ? t5 - f.present_ns : 0;
                 if (age != 0) { ab_age_sum += age; ++ab_age_n; if (age > ab_age_max) { ab_age_max = age; } }
+                if (age != 0 && f.t1 > f.present_ns && f.t_submit >= f.t1 && w0 >= f.t_submit && t5 >= w0) {
+                    sp_copied += f.t1 - f.present_ns; sp_submit += f.t_submit - f.t1; sp_enc += w0 - f.t_submit; sp_sent += t5 - w0; ++sp_n;
+                }
                 SftHdrWire h = {};
                 h.magic = 0x52544653u;        /* "SFTR" */
                 h.version = 2;
@@ -6828,6 +6843,25 @@ namespace ams::mitm::applet {
                     ab_age_sum = ab_age_max = 0; ab_age_n = 0; early_collects = 0; ec_t0 = t0;
                 }
                 s.early_poll = early;
+                /* the CPU boost: on, or A/B every 600 frames (on for the even halves) */
+                if (g_cpu_boost != 0 && cpu_hz0 != 0 && i % 600 == 0) {
+                    const bool want = g_cpu_boost == 1 || ((i / 600) & 1) == 0;
+                    if (g_cpu_boost == 2 && i != 0) {
+                        LogLine("   cpu-boost A/B: %s - console age avg %llu us; read avg %llu us; %u frames",
+                                cpu_boosted ? "1785 MHz" : "normal  ", static_cast<unsigned long long>(ab_age_n ? ab_age_sum / ab_age_n / 1000 : 0),
+                                static_cast<unsigned long long>(cb_n ? cb_read / cb_n / 1000 : 0), ab_age_n);
+                        ab_age_sum = ab_age_max = 0; ab_age_n = 0; cb_read = 0; cb_n = 0;
+                    }
+                    if (want != cpu_boosted) {
+                        const bool ok = ClockSetRate(PcvDevice_Cpu, want ? 1785000000u : cpu_hz0);
+                        if (i == 0 || g_cpu_boost == 2) {
+                            u32 now_hz = 0;
+                            static_cast<void>(ClockRateOf(PcvDevice_Cpu, std::addressof(now_hz)));
+                            if (i == 0) { LogLine("   cpu-boost: CPU %u MHz -> %u MHz (%s)", cpu_hz0 / 1000000, now_hz / 1000000, ok ? "set" : "refused"); }
+                        }
+                        cpu_boosted = want;
+                    }
+                }
                 if (pipe && fl.active) {
                     s.idle_work = { [](void *p) -> bool { return (*static_cast<decltype(hook) *>(p))(); }, std::addressof(hook) };
                 }
@@ -6838,6 +6872,7 @@ namespace ams::mitm::applet {
                 if (hook_stop) { break; }
                 if (!got) { why = SlotReadFailure(); end = StreamEnd::GameGone; break; }
                 const u64 present_ns = armTicksToNs(s.present_tick);
+                cb_read += rn; ++cb_n;
                 const u64 t1 = armTicksToNs(armGetSystemTick());
                 /* pipelined, frame i goes to the picture frame i-1 is NOT being encoded from */
                 const u32 k = pipe ? (i & 1) : 0;
@@ -6947,6 +6982,17 @@ namespace ams::mitm::applet {
                         const u32 wd = w_n ? w_n : 1;
                         const u32 fw = s.fence_waits - w_fwait0;
                         const u64 wfps = wn > w_t0 ? static_cast<u64>(sent - w_sent0) * UINT64_C(10000000000) / (wn - w_t0) : 0;
+                        {
+                            u32 cpu_hz = 0, emc_hz = 0;
+                            static_cast<void>(ClockRateOf(0x40000001u /* CPU */, std::addressof(cpu_hz)));
+                            static_cast<void>(ClockRateOf(0x40000039u /* EMC */, std::addressof(emc_hz)));
+                            const u32 sn = sp_n ? sp_n : 1;
+                            LogLine("   nvstream age split avg us: present->copied %llu, ->submitted %llu, ->encoded %llu, ->sent %llu (%u frames); CPU %u MHz, memory %u MHz",
+                                    static_cast<unsigned long long>(sp_copied / sn / 1000), static_cast<unsigned long long>(sp_submit / sn / 1000),
+                                    static_cast<unsigned long long>(sp_enc / sn / 1000), static_cast<unsigned long long>(sp_sent / sn / 1000), sp_n,
+                                    cpu_hz / 1000000, emc_hz / 1000000);
+                            sp_copied = sp_submit = sp_enc = sp_sent = 0; sp_n = 0;
+                        }
                         LogLine("   nvstream window: %llu.%llu fps sent; per frame avg us: read %llu (flush %llu of it)  VIC %llu  NVENC wait %llu  GPU fence %llu; "
                                 "presents: %u already drawn, %u waited for, %u skipped",
                                 static_cast<unsigned long long>(wfps / 10), static_cast<unsigned long long>(wfps % 10),
