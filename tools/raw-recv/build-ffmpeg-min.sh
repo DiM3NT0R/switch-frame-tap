@@ -1,7 +1,8 @@
 #!/bin/bash
 # v0.6.1: a minimal FFmpeg for the Windows viewer, linked into SwitchFrameTap.exe.
 #
-# The viewer needs three pieces of FFmpeg: the H.264 decoder (the stream),
+# The viewer needs three pieces of FFmpeg: the H.264 decoder (the stream;
+# v0.7.11: with D3D11VA, the GPU's video decoder),
 # the AAC encoder and the MP4 muxer (recording, R). The prebuilt LGPL DLLs it
 # shipped until v0.6.0 carry every codec FFmpeg has - 130 MB unpacked, 45 MB
 # of the 50 MB zip. This builds FFmpeg 8.1 (the same version) with only those,
@@ -49,10 +50,11 @@ cd "$B"
     --enable-decoder=h264 --enable-parser=h264 \
     --enable-encoder=aac \
     --enable-muxer=mp4 --enable-protocol=file \
+    --enable-d3d11va --enable-hwaccel=h264_d3d11va,h264_d3d11va2 \
     --enable-x86asm \
     > "$B/configure.log" 2>&1 || { tail -30 "$B/configure.log"; exit 1; }
 grep -E "^(decoders|encoders|muxers|protocols|External libraries|x86asm)" -A2 "$B/configure.log" | head -20 || true
-make -j"$(nproc)" > "$B/make.log" 2>&1 || { tail -40 "$B/make.log"; exit 1; }
+make -j"${JOBS:-6}" > "$B/make.log" 2>&1 || { tail -40 "$B/make.log"; exit 1; }
 rm -rf "$OUT"
 make install > "$B/install.log" 2>&1
 cp "$SRC/COPYING.LGPLv2.1" "$OUT/COPYING.LGPLv2.1"

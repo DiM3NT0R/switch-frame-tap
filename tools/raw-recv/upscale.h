@@ -112,6 +112,10 @@ static int up_needs_swap(SDL_Renderer *ren)
 #ifndef GL_RED
 #define GL_RED 0x1903
 #endif
+#ifndef GL_RG
+#define GL_RG 0x8227
+#define GL_RG8 0x822B
+#endif
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE 0x812F
 #endif
@@ -153,6 +157,7 @@ typedef ptrdiff_t up_GLsizeiptr;
     X(void, glGetProgramInfoLog, (GLuint, GLsizei, GLsizei *, up_GLchar *)) \
     X(void, glUseProgram, (GLuint)) \
     X(GLint, glGetUniformLocation, (GLuint, const up_GLchar *)) \
+    X(void, glUniform1i, (GLint, GLint)) \
     X(void, glUniform2f, (GLint, GLfloat, GLfloat)) \
     X(void, glUniform4i, (GLint, GLint, GLint, GLint, GLint)) \
     X(void, glUniform4uiv, (GLint, GLsizei, const GLuint *)) \
@@ -191,7 +196,7 @@ typedef struct {
     int tried, ok, nis_ok;
     GLuint vao, fbo, ubo;
     GLuint p_yuv, p_easu, p_rcas, p_nis, p_show;
-    GLuint t_y, t_u, t_v, t_rgb, t_mid, t_coef_scale, t_coef_usm;
+    GLuint t_y, t_u, t_v, t_uv, t_rgb, t_mid, t_coef_scale, t_coef_usm;
     int in_w, in_h, mid_w, mid_h;
     int active, out_w, out_h;            /* the last frame: upscaled, and to what size */
 } up_state_t;
@@ -207,12 +212,14 @@ static const char *up_fs_yuv =
     "layout(binding = 1) uniform sampler2D tu;\n"
     "layout(binding = 2) uniform sampler2D tv;\n"
     "uniform vec2 size;\n"
+    "uniform int nv12;\n"                     /* U and V together in tu (the GPU decoder's NV12) */
     "out vec4 o;\n"
     "void main() {\n"
     "  vec2 uv = gl_FragCoord.xy / size;\n"   /* texture row 0 = the picture's top, and so is the FBO's */
     "  float y = (texture(ty, uv).r - 16.0 / 255.0) * (255.0 / 219.0);\n"
-    "  float u = (texture(tu, uv).r - 128.0 / 255.0) * (255.0 / 224.0);\n"
-    "  float v = (texture(tv, uv).r - 128.0 / 255.0) * (255.0 / 224.0);\n"
+    "  vec2 c = nv12 != 0 ? texture(tu, uv).rg : vec2(texture(tu, uv).r, texture(tv, uv).r);\n"
+    "  float u = (c.x - 128.0 / 255.0) * (255.0 / 224.0);\n"
+    "  float v = (c.y - 128.0 / 255.0) * (255.0 / 224.0);\n"
     "  o = vec4(clamp(vec3(y + 1.5748 * v, y - 0.1873 * u - 0.4681 * v, y + 1.8556 * u), 0.0, 1.0), 1.0);\n"
     "}\n";
 
@@ -589,7 +596,7 @@ static int vsr_setup(int W, int H, int vw, int vh)
     return 1;
 }
 
-static int vsr_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesize[3], int W, int H)
+static int vsr_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesize[3], int W, int H, int nv12)
 {
     if (!vsr_init(ren)) return up_skip("unavailable, press U", 0);
     int ow = 0, oh = 0;
@@ -608,8 +615,9 @@ static int vsr_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesiz
     for (int y = 0; y < H; y++) memcpy(dst + (size_t)y * m.RowPitch, data[0] + (size_t)y * linesize[0], (size_t)W);
     uint8_t *uv = dst + (size_t)m.RowPitch * H;
     for (int y = 0; y < H / 2; y++) {
-        const uint8_t *u = data[1] + (size_t)y * linesize[1], *v = data[2] + (size_t)y * linesize[2];
         uint8_t *o = uv + (size_t)y * m.RowPitch;
+        if (nv12) { memcpy(o, data[1] + (size_t)y * linesize[1], (size_t)W); continue; }   /* already NV12 (GPU decoder) */
+        const uint8_t *u = data[1] + (size_t)y * linesize[1], *v = data[2] + (size_t)y * linesize[2];
         for (int x = 0; x < W / 2; x++) { o[2 * x] = u[x]; o[2 * x + 1] = v[x]; }
     }
     ID3D11DeviceContext_Unmap(g_vsr.ctx, (ID3D11Resource *)g_vsr.stage, 0);
@@ -665,11 +673,11 @@ static void up_bind(int unit, GLuint tex)
 static GLuint fbits(float f) { GLuint u; memcpy(&u, &f, 4); return u; }
 
 /* the frame, upscaled into the window: 1 drawn, 0 not (draw it the usual way) */
-static int up_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesize[3], int W, int H, int mode)
+static int up_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesize[3], int W, int H, int mode, int nv12)
 {
     g_up.active = 0;
 #ifdef _WIN32
-    if (mode == UP_RTX) return vsr_draw(ren, data, linesize, W, H);
+    if (mode == UP_RTX) return vsr_draw(ren, data, linesize, W, H, nv12);
 #endif
     if (mode == UP_OFF) { g_up_why[0] = 0; return 0; }
     if (!up_init(ren)) return up_skip("unavailable, press U", 0);
@@ -694,6 +702,7 @@ static int up_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesize
         g_up.t_y = up_tex(GL_R8, W, H, GL_RED, GL_UNSIGNED_BYTE, NULL, GL_LINEAR);
         g_up.t_u = up_tex(GL_R8, W / 2, H / 2, GL_RED, GL_UNSIGNED_BYTE, NULL, GL_LINEAR);
         g_up.t_v = up_tex(GL_R8, W / 2, H / 2, GL_RED, GL_UNSIGNED_BYTE, NULL, GL_LINEAR);
+        g_up.t_uv = up_tex(GL_RG8, W / 2, H / 2, GL_RG, GL_UNSIGNED_BYTE, NULL, GL_LINEAR);
         g_up.t_rgb = up_tex(GL_RGBA8, W, H, GL_RGBA, GL_UNSIGNED_BYTE, NULL, GL_LINEAR);
         g_up.in_w = W; g_up.in_h = H;
         g_up.mid_w = g_up.mid_h = 0;
@@ -709,14 +718,20 @@ static int up_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesize
     up_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     up_bind(0, g_up.t_y); up_glPixelStorei(GL_UNPACK_ROW_LENGTH, linesize[0]);
     up_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_RED, GL_UNSIGNED_BYTE, data[0]);
-    up_bind(1, g_up.t_u); up_glPixelStorei(GL_UNPACK_ROW_LENGTH, linesize[1]);
-    up_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W / 2, H / 2, GL_RED, GL_UNSIGNED_BYTE, data[1]);
-    up_bind(2, g_up.t_v); up_glPixelStorei(GL_UNPACK_ROW_LENGTH, linesize[2]);
-    up_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W / 2, H / 2, GL_RED, GL_UNSIGNED_BYTE, data[2]);
+    if (nv12) {
+        up_bind(1, g_up.t_uv); up_glPixelStorei(GL_UNPACK_ROW_LENGTH, linesize[1] / 2);
+        up_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W / 2, H / 2, GL_RG, GL_UNSIGNED_BYTE, data[1]);
+    } else {
+        up_bind(1, g_up.t_u); up_glPixelStorei(GL_UNPACK_ROW_LENGTH, linesize[1]);
+        up_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W / 2, H / 2, GL_RED, GL_UNSIGNED_BYTE, data[1]);
+        up_bind(2, g_up.t_v); up_glPixelStorei(GL_UNPACK_ROW_LENGTH, linesize[2]);
+        up_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W / 2, H / 2, GL_RED, GL_UNSIGNED_BYTE, data[2]);
+    }
     up_glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     up_fbo_target(g_up.t_rgb, W, H);
     up_glUseProgram(g_up.p_yuv);
     up_glUniform2f(up_glGetUniformLocation(g_up.p_yuv, "size"), (float)W, (float)H);
+    up_glUniform1i(up_glGetUniformLocation(g_up.p_yuv, "nv12"), nv12);
     up_glDrawArrays(GL_TRIANGLES, 0, 3);
 
     if (mode == UP_FSR) {

@@ -28,6 +28,8 @@
  *   ./raw-view --file s.sft --paced --seconds 4 --stats full --shot hud.bmp
  *                              # v0.7.2: the stats overlay at a level (off/fps/graphs/full;
  *                              # O or F3 cycles it), and the last frame saved as BMP (tests)
+ *   ./raw-view --software      # v0.7.11: decode on the CPU, not the GPU's video decoder
+ *                              # (viewer.ini hwdec=0 too; the GPU is the default)
  *   ./raw-view --file s.sft --paced --upscaler fsr   # v0.7.11: GPU upscaling (off/fsr/nis;
  *                              # U cycles it, remembered in viewer.ini)
  *   ./raw-view --net 192.168.1.23   # v0.7: the stream over the network (the console
@@ -77,7 +79,9 @@
 #include <SDL2/SDL.h>
 #ifdef SFT_H264
 #include <libavcodec/avcodec.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/pixdesc.h>
 #endif
 
 #define SFT_VID 0x1209
@@ -107,6 +111,28 @@ static const char *g_shot = NULL;    /* --shot: save the last frame drawn (overl
 static const char *g_mp4 = NULL;     /* --mp4 FILE: record into FILE from the start (tests) */
 static const char *g_rec_dir = NULL; /* --rec-dir DIR: where R saves (default Videos/Switch Frame Tap) */
 static int g_win_w = 0, g_win_h = 0;  /* --window WxH: keep the window this size (tests) */
+#ifdef __APPLE__   /* v0.7.11 (DiM3NT0R, PR #12): Retina - the picture at the screen's real pixels */
+#define VIDEO_WINDOW_FLAGS (SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI)
+#else
+#define VIDEO_WINDOW_FLAGS (SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE)
+#endif
+
+/* v0.7.11 (DiM3NT0R, PR #12): the window at the picture's size, but never
+ * bigger than the screen (a 1080p stream on a 1366x768 laptop) */
+static void size_video_window(SDL_Window *win, int width, int height)
+{
+    SDL_Rect usable;
+    if (SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(win), &usable) == 0) {
+        double fit = 1.0;
+        const double fw = (usable.w - 32.0) / width, fh = (usable.h - 48.0) / height;
+        if (fw < fit) fit = fw;
+        if (fh < fit) fit = fh;
+        width = width * fit > 1 ? (int)(width * fit) : 1;
+        height = height * fit > 1 ? (int)(height * fit) : 1;
+    }
+    SDL_SetWindowSize(win, width, height);
+}
+static int g_hwdec = 1;               /* v0.7.11: the GPU's video decoder (viewer.ini hwdec=0, --software: the CPU) */
 
 /* ---- v0.3: game audio ------------------------------------------------------
  * The console sends the sound since the last frame as its own packet before
@@ -280,6 +306,7 @@ static void prefs_load(void)
         if (sscanf(line, "stats_overlay=%d", &hm) == 1 && hm >= 0 && hm < HUD_MODES) g_hud = hm;
         if (sscanf(line, "vsync=%d", &hm) == 1) g_vsync = hm != 0;
         if (sscanf(line, "upscaler=%127s", v) == 1) up_set_by_key(v);
+        if (sscanf(line, "hwdec=%d", &hm) == 1) g_hwdec = hm != 0;
     }
     fclose(f);
 }
@@ -290,7 +317,7 @@ static void prefs_save(void)
     prefs_path(path, sizeof(path));
     FILE *f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "connection=%s\nlast_ip=%s\nstats_overlay=%d\nvsync=%d\nupscaler=%s\n", g_conn == CONN_NET ? "network" : "usb", g_last_ip, g_hud, g_vsync, up_key[g_upscaler]);
+    fprintf(f, "connection=%s\nlast_ip=%s\nstats_overlay=%d\nvsync=%d\nupscaler=%s\nhwdec=%d\n", g_conn == CONN_NET ? "network" : "usb", g_last_ip, g_hud, g_vsync, up_key[g_upscaler], g_hwdec);
     fclose(f);
 }
 
@@ -666,16 +693,70 @@ static int reader_pending(void)
 }
 
 #ifdef SFT_H264
-typedef struct { AVCodecContext *c; AVPacket *pkt; AVFrame *frm; } h264_t;
+/* v0.7.11: the GPU's video decoder when there is one (the macOS part after
+ * DiM3NT0R's PR #12): VideoToolbox on macOS, D3D11VA on Windows (NVIDIA, AMD,
+ * Intel), NVDEC or VAAPI on Linux. One frame in, one frame out, no thread
+ * delay; the frame comes back to memory as NV12 (~0.3 ms at 1080p) and is
+ * drawn as it is. Anything that fails goes back to the software decoder. */
+typedef struct {
+    AVCodecContext *c; AVPacket *pkt; AVFrame *frm, *swfrm;
+    AVBufferRef *hwdev;
+    enum AVPixelFormat hwfmt;               /* AV_PIX_FMT_NONE: software */
+    const char *hwname;                     /* "d3d11va", "videotoolbox", ... */
+} h264_t;
 
-static int h264_open(h264_t *d, int low_latency, int threads)
+static const enum AVHWDeviceType h264_hw_order[] = {
+#if defined(_WIN32)
+    AV_HWDEVICE_TYPE_D3D11VA,
+#elif defined(__APPLE__)
+    AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+#else
+    AV_HWDEVICE_TYPE_CUDA, AV_HWDEVICE_TYPE_VAAPI,
+#endif
+};
+
+static enum AVPixelFormat h264_get_format(AVCodecContext *c, const enum AVPixelFormat *fmts)
+{
+    h264_t *d = c->opaque;
+    for (const enum AVPixelFormat *p = fmts; *p != AV_PIX_FMT_NONE; p++) if (*p == d->hwfmt) return *p;
+    for (const enum AVPixelFormat *p = fmts; *p != AV_PIX_FMT_NONE; p++) {
+        const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(*p);
+        if (desc && !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
+            fprintf(stderr, "decode: %s refused this stream - software\n", d->hwname ? d->hwname : "GPU");
+            d->hwfmt = AV_PIX_FMT_NONE;
+            return *p;
+        }
+    }
+    return AV_PIX_FMT_NONE;
+}
+
+static int h264_open(h264_t *d, int low_latency, int threads, int hw)
 {
     const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
     if (!codec) return -1;
     d->c = avcodec_alloc_context3(codec);
     d->pkt = av_packet_alloc();
     d->frm = av_frame_alloc();
-    if (!d->c || !d->pkt || !d->frm) return -1;
+    d->swfrm = av_frame_alloc();
+    if (!d->c || !d->pkt || !d->frm || !d->swfrm) return -1;
+    d->hwfmt = AV_PIX_FMT_NONE;
+    d->hwname = NULL;
+    for (size_t k = 0; hw && k < sizeof(h264_hw_order) / sizeof(h264_hw_order[0]) && d->hwfmt == AV_PIX_FMT_NONE; k++) {
+        for (int i = 0;; i++) {
+            const AVCodecHWConfig *cfg = avcodec_get_hw_config(codec, i);
+            if (!cfg) break;
+            if (cfg->device_type != h264_hw_order[k] || !(cfg->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) continue;
+            if (av_hwdevice_ctx_create(&d->hwdev, h264_hw_order[k], NULL, NULL, 0) == 0) {
+                d->hwfmt = cfg->pix_fmt;
+                d->hwname = av_hwdevice_get_type_name(h264_hw_order[k]);
+                d->c->hw_device_ctx = av_buffer_ref(d->hwdev);
+                d->c->opaque = d;
+                d->c->get_format = h264_get_format;
+            }
+            break;
+        }
+    }
+    if (d->hwfmt != AV_PIX_FMT_NONE) low_latency = 1;   /* the GPU decodes it whole: no threads to hold frames */
     if (low_latency) {
         /* every packet is a whole IDR frame: output it the moment it decodes */
         d->c->flags |= AV_CODEC_FLAG_LOW_DELAY;
@@ -686,7 +767,9 @@ static int h264_open(h264_t *d, int low_latency, int threads)
         d->c->thread_count = threads;        /* 0 = one per core */
         d->c->thread_type = FF_THREAD_FRAME;
     }
-    return avcodec_open2(d->c, codec, NULL);
+    const int rc = avcodec_open2(d->c, codec, NULL);
+    if (rc == 0) fprintf(stderr, "decode: %s\n", d->hwname ? d->hwname : "software");
+    return rc;
 }
 
 /* one access unit in, at most one frame out (1 = frame in d->frm) */
@@ -699,14 +782,30 @@ static int h264_decode(h264_t *d, uint8_t *buf, int len, int64_t pts)
     if (rc < 0 && rc != AVERROR(EAGAIN)) return rc;
     rc = avcodec_receive_frame(d->c, d->frm);
     if (rc == AVERROR(EAGAIN)) return 0;
-    return rc < 0 ? rc : 1;
+    if (rc < 0) return rc;
+    if (d->hwfmt != AV_PIX_FMT_NONE && d->frm->format == d->hwfmt) {   /* back from the GPU, as NV12 */
+        av_frame_unref(d->swfrm);
+        rc = av_hwframe_transfer_data(d->swfrm, d->frm, 0);
+        if (rc < 0) return rc;
+        av_frame_copy_props(d->swfrm, d->frm);
+        av_frame_unref(d->frm);
+        av_frame_move_ref(d->frm, d->swfrm);
+    }
+    if (d->frm->format != AV_PIX_FMT_YUV420P && d->frm->format != AV_PIX_FMT_YUVJ420P && d->frm->format != AV_PIX_FMT_NV12) {
+        av_frame_unref(d->frm);
+        return AVERROR(ENOSYS);                /* a format the display cannot draw */
+    }
+    return 1;
 }
 
 static void h264_close(h264_t *d)
 {
     av_frame_free(&d->frm);
+    av_frame_free(&d->swfrm);
     av_packet_free(&d->pkt);
     avcodec_free_context(&d->c);
+    av_buffer_unref(&d->hwdev);
+    d->hwfmt = AV_PIX_FMT_NONE;
 }
 #endif
 
@@ -738,7 +837,7 @@ static void ren_swap(SDL_Window **winp, SDL_Renderer **renp, SDL_Texture **texp)
         SDL_GetWindowSize(win, &w, &h);
         snprintf(title, sizeof(title), "%s", SDL_GetWindowTitle(win));
         SDL_DestroyWindow(win);
-        win = SDL_CreateWindow(title, x, y, w, h, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
+        win = SDL_CreateWindow(title, x, y, w, h, VIDEO_WINDOW_FLAGS |
                                (fl & (SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_MAXIMIZED)));
         *winp = win;
         if (!win) { fprintf(stderr, "\nSDL window: %s\n", SDL_GetError()); g_quit = 1; return; }
@@ -766,6 +865,12 @@ static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) { g_quit = 1; continue; }
+        /* v0.7.11 (DiM3NT0R, PR #12): a non-Latin keyboard layout (Cyrillic,
+         * Greek...) gives letter keys non-ASCII codes - use the key's place,
+         * so R, M, O, V, U and the rest still work */
+        if (e.type == SDL_KEYDOWN && (e.key.keysym.sym > 0x7f || e.key.keysym.sym == SDLK_UNKNOWN) &&
+            e.key.keysym.scancode >= SDL_SCANCODE_A && e.key.keysym.scancode <= SDL_SCANCODE_Z)
+            e.key.keysym.sym = SDLK_a + (e.key.keysym.scancode - SDL_SCANCODE_A);
         /* v0.7: typing the Switch's address (I) takes every key */
         if (g_ip_editing) {
             if (e.type == SDL_TEXTINPUT) {
@@ -988,6 +1093,7 @@ static unsigned char g_key_pts[256];          /* and whether it was a keyframe *
 static volatile long s_packets = 0, s_decoded = 0, s_undecoded = 0, s_lost = 0, s_keyframes = 0, s_sessions = 1;
 static volatile double s_bytes = 0, s_dec_ms = 0, s_dec_max = 0;
 static int g_dec_low = 1, g_dec_fallback = 0;   /* v0.7.11: one decode thread, and whether it fell back */
+static char g_dec_name[48] = "";                /* v0.7.11: "GPU (d3d11va)" and the like, for g_dec_mode */
 
 typedef struct { h264_t *dec; FILE *rec; FILE *es; } dec_args_t;
 
@@ -1024,18 +1130,31 @@ static int decoder_main(void *arg)
          * (over 12 ms a frame for 120 frames), two frame threads, once */
         {
             static long fb_n = 0; static double fb_ms = 0;
-            if (g_dec_low && !g_dec_fallback) {
+            if (g_dec_low && !g_dec_fallback && !a->dec->hwname) {
                 fb_ms += dm;
                 if (++fb_n >= 120) {
                     if (fb_ms / fb_n > 12.0) {
                         fprintf(stderr, "\ndecode: %.1f ms a frame on one thread - switching to two frame threads (one frame more latency)\n", fb_ms / fb_n);
                         h264_close(a->dec);
-                        if (h264_open(a->dec, 0, 2) == 0) { g_dec_fallback = 1; g_dec_mode = "2 threads (slow PC)"; hud_toast("Decoding on 2 threads: this PC is slow for 1"); }
+                        if (h264_open(a->dec, 0, 2, 0) == 0) { g_dec_fallback = 1; g_dec_mode = "2 threads (slow PC)"; hud_toast("Decoding on 2 threads: this PC is slow for 1"); }
                         continue;
                     }
                     fb_n = 0; fb_ms = 0;
                 }
             }
+        }
+        /* v0.7.11: the GPU decoder keeps failing (a driver that took the
+         * stream but gives nothing back): the software decoder, for good */
+        {
+            static int hw_err = 0;
+            if (a->dec->hwname && got < 0 && ++hw_err >= 30) {
+                fprintf(stderr, "\ndecode: %s failed %d frames in a row - software from now on\n", a->dec->hwname, hw_err);
+                h264_close(a->dec);
+                if (h264_open(a->dec, 1, 1, 0) == 0) { snprintf(g_dec_name, sizeof(g_dec_name), "1 thread (GPU failed)"); g_dec_mode = g_dec_name; hud_toast("GPU decoding failed - decoding on the CPU"); }
+                hw_err = 0;
+                continue;
+            }
+            if (got > 0) hw_err = 0;
         }
         if (got < 0) { s_undecoded++; continue; }
         if (got == 0) continue;
@@ -1059,16 +1178,17 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
                     int low_latency, int threads, FILE *rec, FILE *es)
 {
     h264_t dec = {0};
-    if (h264_open(&dec, low_latency, threads) != 0) { fprintf(stderr, "libavcodec H.264 decoder unavailable\n"); return 1; }
-    g_dec_low = low_latency;
-    g_dec_mode = low_latency ? "1 thread" : "frame threads (--threads)";
-    fprintf(stderr, "decode: %s\n", low_latency ? "one thread, no decoder delay" : "frame threads (--threads)");
+    if (h264_open(&dec, low_latency, threads, g_hwdec) != 0) { fprintf(stderr, "libavcodec H.264 decoder unavailable\n"); return 1; }
+    g_dec_low = low_latency || dec.hwname;
+    if (dec.hwname) { snprintf(g_dec_name, sizeof(g_dec_name), "GPU (%s)", dec.hwname); g_dec_mode = g_dec_name; }
+    else g_dec_mode = low_latency ? "1 thread" : "frame threads (--threads)";
+    fprintf(stderr, "decode: %s\n", dec.hwname ? g_dec_name : low_latency ? "one thread, no decoder delay" : "frame threads (--threads)");
     if (!win) {
         if (SDL_Init(SDL_INIT_VIDEO) != 0) { fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1; }
         SDL_SetYUVConversionMode(SDL_YUV_CONVERSION_BT709);
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
         win = SDL_CreateWindow("Switch Frame Tap", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                               1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+                               1280, 720, VIDEO_WINDOW_FLAGS);
         ren = win ? SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC) : NULL;
         if (!ren) { fprintf(stderr, "SDL window: %s\n", SDL_GetError()); return 1; }
     }
@@ -1097,6 +1217,7 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
     SDL_Texture *tex = NULL;
     AVFrame *show = av_frame_alloc();
     uint32_t W = 0, H = 0;
+    int tex_nv12 = 0;
     const Uint64 freq = SDL_GetPerformanceFrequency();
     const Uint64 t_start = SDL_GetPerformanceCounter();
     Uint64 t_prev_show = 0, t_win = t_start, t_menu = 0;
@@ -1175,18 +1296,20 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
                 if (tex) SDL_RenderSetLogicalSize(ren, (int)W, (int)H);
                 SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
             }
-            if (!tex || (uint32_t)show->width != W || (uint32_t)show->height != H) {
+            const int nv12 = show->format == AV_PIX_FMT_NV12;   /* v0.7.11: from the GPU decoder */
+            if (!tex || (uint32_t)show->width != W || (uint32_t)show->height != H || nv12 != tex_nv12) {
                 if (tex) SDL_DestroyTexture(tex);
-                W = (uint32_t)show->width; H = (uint32_t)show->height;
+                W = (uint32_t)show->width; H = (uint32_t)show->height; tex_nv12 = nv12;
                 if (g_win_w > 0) SDL_SetWindowSize(win, g_win_w, g_win_h);
-                else if (!(SDL_GetWindowFlags(win) & (SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_MAXIMIZED))) SDL_SetWindowSize(win, (int)W, (int)H);
-                tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, (int)W, (int)H);
+                else if (!(SDL_GetWindowFlags(win) & (SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_MAXIMIZED))) size_video_window(win, (int)W, (int)H);
+                tex = SDL_CreateTexture(ren, nv12 ? SDL_PIXELFORMAT_NV12 : SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, (int)W, (int)H);
                 SDL_RenderSetLogicalSize(ren, (int)W, (int)H);
-                fprintf(stderr, "\nstream: %ux%u H.264\n", W, H);
+                fprintf(stderr, "\nstream: %ux%u H.264%s\n", W, H, nv12 ? " (NV12)" : "");
             }
-            SDL_UpdateYUVTexture(tex, NULL, show->data[0], show->linesize[0], show->data[1], show->linesize[1], show->data[2], show->linesize[2]);
+            if (nv12) SDL_UpdateNVTexture(tex, NULL, show->data[0], show->linesize[0], show->data[1], show->linesize[1]);
+            else SDL_UpdateYUVTexture(tex, NULL, show->data[0], show->linesize[0], show->data[1], show->linesize[1], show->data[2], show->linesize[2]);
             SDL_RenderClear(ren);
-            if (!up_draw(ren, show->data, show->linesize, (int)W, (int)H, g_upscaler))   /* v0.7.11: U */
+            if (!up_draw(ren, show->data, show->linesize, (int)W, (int)H, g_upscaler, nv12))   /* v0.7.11: U */
                 SDL_RenderCopy(ren, tex, NULL, NULL);
             if (rec_active()) {                /* v0.5: a red dot while recording (not in the file) */
                 const int d = (int)(H / 40 > 12 ? H / 40 : 12);
@@ -1322,6 +1445,8 @@ int main(int argc, char **argv)
             for (int k = 0; k < HUD_MODES; k++) if (!strcmp(m, hud_mode_name[k]) || (k == HUD_FPS && !strcmp(m, "fps"))) g_hud = k;
         }
         else if (!strcmp(argv[i], "--upscaler") && i + 1 < argc) up_set_by_key(argv[++i]);
+        else if (!strcmp(argv[i], "--software")) g_hwdec = 0;
+        else if (!strcmp(argv[i], "--hwdec")) g_hwdec = 1;
         else if (!strcmp(argv[i], "--window") && i + 1 < argc) sscanf(argv[++i], "%dx%d", &g_win_w, &g_win_h);
         else if (!strcmp(argv[i], "--mp4") && i + 1 < argc) g_mp4 = argv[++i];
         else if (!strcmp(argv[i], "--rec-dir") && i + 1 < argc) g_rec_dir = argv[++i];
@@ -1368,7 +1493,7 @@ int main(int argc, char **argv)
         prefs_load();                      /* v0.7: USB or network, the last address; v0.7.11: before the renderer */
         up_pick_renderer();
         win = SDL_CreateWindow("Switch Frame Tap", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                               1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+                               1280, 720, VIDEO_WINDOW_FLAGS);
         ren = win ? SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC) : NULL;
         if (!ren) {
             fprintf(stderr, "SDL window: %s\n", SDL_GetError());
@@ -1423,7 +1548,7 @@ int main(int argc, char **argv)
 
 #ifdef SFT_H264
     h264_t dec = {0};
-    int dec_ok = (h264_open(&dec, low_latency, threads) == 0);
+    int dec_ok = (h264_open(&dec, low_latency, threads, 0) == 0);   /* file replay and the tests: software */
     if (!dec_ok) fprintf(stderr, "libavcodec H.264 decoder unavailable - H.264 packets will be skipped\n");
 #endif
 
@@ -1565,7 +1690,7 @@ int main(int argc, char **argv)
             /* the stream is BT.709 limited range (VUI says so too) */
             SDL_SetYUVConversionMode(SDL_YUV_CONVERSION_BT709);
             win = SDL_CreateWindow("switch-frame-tap", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                   (int)(hdr.width*scale), (int)(hdr.height*scale), SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+                                   (int)(hdr.width*scale), (int)(hdr.height*scale), VIDEO_WINDOW_FLAGS);
             /* M86b: SDL scales nearest-neighbour by default, which made edges
              * look pixelated in a resized or maximized window. Linear, and keep
              * 16:9 with letterboxing instead of stretching. */

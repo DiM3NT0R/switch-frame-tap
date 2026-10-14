@@ -26,7 +26,7 @@ export MACOSX_DEPLOYMENT_TARGET=12.0
 M="$REPO/ref/macos-$ARCH"
 mkdir -p "$M" "$REPO/dist"
 
-# ---- FFmpeg, static, only the viewer's pieces
+# ---- FFmpeg, static, only the viewer's pieces (v0.7.11: + VideoToolbox, the GPU decoder)
 FF="$M/ffmpeg-min"
 if [ ! -f "$FF/lib/libavcodec.a" ]; then
     echo "== FFmpeg 8.1 (minimal, static, $ARCH)"
@@ -42,6 +42,7 @@ if [ ! -f "$FF/lib/libavcodec.a" ]; then
         --enable-decoder=h264 --enable-parser=h264 \
         --enable-encoder=aac \
         --enable-muxer=mp4 --enable-protocol=file \
+        --enable-videotoolbox --enable-hwaccel=h264_videotoolbox \
         $ASM > configure.log 2>&1 || { tail -30 configure.log; exit 1; }
     make -j"$(sysctl -n hw.ncpu)" > make.log 2>&1 || { tail -40 make.log; exit 1; }
     make install > install.log 2>&1
@@ -74,6 +75,7 @@ clang -O2 -Wall -DSFT_H264 -DSFT_MP4 \
     -I"$FF/include" -I"$SDLP/include" $("$SDLP/bin/sdl2-config" --cflags) -I"$USBP/include" \
     -o "$OUT/switch-frame-tap-viewer" raw-view.c \
     "$FF/lib/libavformat.a" "$FF/lib/libavcodec.a" "$FF/lib/libavutil.a" \
+    -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework CoreServices \
     "$SDLP/lib/libSDL2.a" $SDL_STATIC \
     "$USBP/lib/libusb-1.0.a" -framework IOKit -framework CoreFoundation -framework Security \
     -liconv -lm

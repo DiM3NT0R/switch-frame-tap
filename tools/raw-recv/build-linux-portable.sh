@@ -38,7 +38,7 @@ if [ ! -f "$FF/lib/libavcodec.a" ]; then
         --enable-encoder=aac \
         --enable-muxer=mp4 --enable-protocol=file \
         --enable-x86asm > configure.log 2>&1 || { tail -30 configure.log; exit 1; }
-    make -j"$(nproc)" > make.log 2>&1 || { tail -40 make.log; exit 1; }
+    make -j"${JOBS:-6}" > make.log 2>&1 || { tail -40 make.log; exit 1; }
     make install > install.log 2>&1
     cp "$REPO/ref/ffmpeg-8.1/COPYING.LGPLv2.1" "$FF/"
 fi
@@ -57,7 +57,7 @@ if [ ! -f "$SDL/lib/libSDL2.a" ]; then
         --disable-video-vulkan --disable-esd --disable-arts --disable-nas --disable-sndio --disable-jack \
         > configure.log 2>&1 || { tail -30 configure.log; exit 1; }
     grep -E "^(  )?(Video drivers|Audio drivers|Input drivers)|SDL2 Configure Summary" -A2 configure.log | head -20 || true
-    make -j"$(nproc)" > make.log 2>&1 || { tail -40 make.log; exit 1; }
+    make -j"${JOBS:-6}" > make.log 2>&1 || { tail -40 make.log; exit 1; }
     make install > install.log 2>&1
     cp "$L/SDL2-$SDLV/LICENSE.txt" "$SDL/"
 fi
