@@ -414,8 +414,6 @@ namespace ams {
             g_screen_off.store(mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "screenoff"), std::memory_order_relaxed);
             mitm::applet::g_early_collect = mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "earlyoff") ? 0
                                           : mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "earlyab") ? 2 : 1;
-            mitm::applet::g_cpu_boost = mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "cpuboostab") ? 2
-                                      : mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "cpuboost") ? 1 : 0;
         }
 
         /* Numeric option out of the arm file: "wait=180" delays the probe so
@@ -840,7 +838,7 @@ namespace ams {
         /* M76: this line used to print jpg=off before jpg was parsed, and
          * called every build a "read-only observer". The flag dump below is
          * the record of what this boot armed. */
-        mitm::applet::LogLine("applet-mitm v0.7.12-test3: up (grc IPC interceptor %s), built against Atmosphere %d.%d.%d",
+        mitm::applet::LogLine("applet-mitm v0.7.12-test4: up (grc IPC interceptor %s), built against Atmosphere %d.%d.%d",
                               mitm::applet::g_grc_armed ? "ARMED" : "off",
                               ATMOSPHERE_RELEASE_VERSION_MAJOR, ATMOSPHERE_RELEASE_VERSION_MINOR, ATMOSPHERE_RELEASE_VERSION_MICRO);
         {
@@ -884,7 +882,6 @@ namespace ams {
         mitm::applet::g_detach_on_home = !ArmFileContains("nodethome");
         g_screen_off.store(ArmFileContains("screenoff"), std::memory_order_relaxed);
         mitm::applet::g_early_collect = ArmFileContains("earlyoff") ? 0 : ArmFileContains("earlyab") ? 2 : 1;
-        mitm::applet::g_cpu_boost = ArmFileContains("cpuboostab") ? 2 : ArmFileContains("cpuboost") ? 1 : 0;
         mitm::applet::g_nv1080_armed  = ArmFileContains("nv1080");
         mitm::applet::g_nv1080_n      = ArmFileNumber("nv1080", 120);
         mitm::applet::g_cap720_armed  = ArmFileContains("cap720");

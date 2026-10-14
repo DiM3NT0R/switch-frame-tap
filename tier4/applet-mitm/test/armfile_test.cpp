@@ -177,8 +177,6 @@ int main() {
     ExpectRelease("early_collect = 0\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio earlyoff");
     ExpectRelease("early_collect = ab\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio earlyab");
     ExpectRelease("early_collect = 1\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio");
-    ExpectRelease("cpu_boost = ab\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio cpuboostab");
-    ExpectRelease("cpu_boost = 1\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio cpuboost");
     /* v0.7.12: screen off while streaming */
     ExpectRelease("screen_off = 1\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio screenoff");
     ExpectRelease("screen_off = 0\n", "vic exec dbg usb live nvqp=20 nvgop=60 wait=20 audio");

@@ -389,6 +389,33 @@ static void ui_drawer(SDL_Renderer *ren, float W)
 
 /* ---- over the game ------------------------------------------------------ */
 
+/* v0.7.12: while recording, a "REC 1:23" pill at the top of the picture
+ * (drawn on the screen only - the recording keeps the console's frames) */
+static void ui_rec_badge(SDL_Renderer *ren, int W, int H)
+{
+    if (!rec_active() || H <= 0 || text_init(ren) != 0) return;
+    SDL_BlendMode old;
+    SDL_GetRenderDrawBlendMode(ren, &old);
+    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+    float sx = 1, sy = 1;
+    SDL_RenderGetScale(ren, &sx, &sy);
+    const float k = (float)H / 720.0f, w720 = W / k;
+    SDL_RenderSetScale(ren, sx * k, sy * k);
+    const int s = (int)rec_seconds();
+    char t[32];
+    if (s >= 3600) snprintf(t, sizeof(t), "REC %d:%02d:%02d", s / 3600, s / 60 % 60, s % 60);
+    else snprintf(t, sizeof(t), "REC %d:%02d", s / 60, s % 60);
+    const float tw = text_width(t, 15, 1), w = tw + 46, x = (w720 - w) / 2, y = 14;
+    ui_rrect(ren, x, y, w, 32, 16, (SDL_Color){ 18, 20, 25, 215 });
+    /* the dot breathes, once a second */
+    const double ph = (double)(SDL_GetTicks() % 1000) / 1000.0;
+    const int a = (int)(150 + 105 * (0.5 + 0.5 * cos(ph * 2 * 3.14159265)));
+    ui_rrect(ren, x + 14, y + 11, 10, 10, 5, (SDL_Color){ UI_BAD.r, UI_BAD.g, UI_BAD.b, (Uint8)a });
+    text_draw(ren, t, (int)(x + 32), (int)y + 7, 15, 1, UI_INK, 0);
+    SDL_RenderSetScale(ren, sx, sy);
+    SDL_SetRenderDrawBlendMode(ren, old);
+}
+
 /* the Settings button (after the mouse moved) and the drawer, over the picture */
 static void ui_overlay(SDL_Renderer *ren, int W, int H)
 {

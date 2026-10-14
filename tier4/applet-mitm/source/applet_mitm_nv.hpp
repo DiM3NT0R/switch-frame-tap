@@ -101,9 +101,6 @@ namespace ams::mitm::applet {
      * pipelined (1080p) stream - 0 off, 1 on, 2 A/B (alternate every 600
      * frames and log the console's present-to-send time for each) */
     extern u32 g_early_collect;
-    /* v0.7.12: the CPU at 1785 MHz while streaming (a faster frame copy) -
-     * 0 off, 1 on, 2 A/B (every 600 frames, logged) */
-    extern u32 g_cpu_boost;
     extern bool g_live_armed;     /* M86: stream whenever a viewer and a game are there */
     /* Default on: end the live session when queueBuffer stalls (HOME), free
      * donor memory, then RunLive reattaches on the next present. nodethome

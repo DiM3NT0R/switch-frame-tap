@@ -45,10 +45,6 @@ namespace ams::mitm::applet {
 
     /* The clock clkrst reports for one module. False if it could not be read. */
     bool ClockRateOf(u32 pcv_module, u32 *out_hz);
-    /* v0.7.12: set a clock (clkrst SetClockRate, as sys-clk does) - the CPU
-     * boost experiment; true when the call went through */
-    bool ClockSetRate(u32 pcv_module, u32 hz);
-    constexpr u32 PcvDevice_Cpu = 0x40000001;
 
     /* One log line per engine: the clock clkrst reports right now. */
     void ClockSurvey(const char *label);

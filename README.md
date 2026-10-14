@@ -12,7 +12,7 @@ consoles running Atmosphère custom firmware. Install it on the SD card, open
 the viewer on your PC, start a game.
 
 <p align="center">
-  <img src="docs/shot-mk8-race-1080p.jpg" width="70%" alt="Mario Kart 8 Deluxe streamed at 1920x1080">
+  <img src="docs/hero-switch-to-pc.jpg" width="90%" alt="The game on the Switch and the same picture on a laptop, connected by a USB-C cable">
 </p>
 
 ## Features

@@ -97,8 +97,6 @@ namespace ams::mitm::applet::armfile {
      *                                                  dark while a stream runs)
      *   early_collect     = 0 | 1 | ab (default 1)   -> earlyoff / earlyab (v0.7.12, PR #12: send a
      *                                                  finished 1080p encode while waiting for the next frame)
-     *   cpu_boost         = 0 | 1 | ab (default 0)   -> cpuboost / cpuboostab (v0.7.12: the CPU at
-     *                                                  1785 MHz while streaming - a faster frame copy)
      *
      * Unknown keys and malformed values are ignored: a bad config file must
      * leave the defaults, never arm something else. */
@@ -145,7 +143,7 @@ namespace ams::mitm::applet::armfile {
     inline size_t BuildReleaseArm(const char *ini, size_t n, char *out, size_t cap) {
         unsigned qp = 20, gop = 60, wait = 20, u = 0;
         unsigned shotkey = 0;
-        bool cap720 = false, anyfw = false, shot = false, audio = true, uvc = false, uvcraw = false, nvab = false, net = false, nohb = false, nodethome = false, shotalbum = false, screenoff = false, earlyoff = false, earlyab = false, cpuboost = false, cpuboostab = false;
+        bool cap720 = false, anyfw = false, shot = false, audio = true, uvc = false, uvcraw = false, nvab = false, net = false, nohb = false, nodethome = false, shotalbum = false, screenoff = false, earlyoff = false, earlyab = false;
         char v[32];
         if (IniValue(ini, n, "quality", v, sizeof(v))) {
             if (std::strcmp(v, "medium") == 0) { qp = 24; }
@@ -178,10 +176,6 @@ namespace ams::mitm::applet::armfile {
             if (std::strcmp(v, "0") == 0) { earlyoff = true; }
             else if (std::strcmp(v, "ab") == 0) { earlyab = true; }
         }
-        if (IniValue(ini, n, "cpu_boost", v, sizeof(v))) {
-            if (std::strcmp(v, "1") == 0) { cpuboost = true; }
-            else if (std::strcmp(v, "ab") == 0) { cpuboostab = true; }
-        }
         if (IniValue(ini, n, "connection", v, sizeof(v))) {
             if (std::strcmp(v, "network") == 0) { net = true; uvc = uvcraw = false; }
             else if (std::strcmp(v, "webcam") == 0) { uvc = true; uvcraw = false; net = false; }
@@ -195,12 +189,11 @@ namespace ams::mitm::applet::armfile {
             std::snprintf(shotbuf, sizeof(shotbuf), " shot shotkey=%u%s%s", shotkey, custom, shotalbum ? " shotalbum" : "");
         }
         /* one transport: "usb" (the viewer or, with uvc, the webcam) or "net" */
-        const int w = std::snprintf(out, cap, "vic exec dbg %s live nvqp=%u nvgop=%u wait=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
+        const int w = std::snprintf(out, cap, "vic exec dbg %s live nvqp=%u nvgop=%u wait=%u%s%s%s%s%s%s%s%s%s%s%s%s",
                                     net ? "net" : "usb", qp, gop, wait, cap720 ? " cap720" : "", anyfw ? " anyfw" : "", shotbuf, audio ? " audio" : "",
                                     uvc ? " uvc" : "", uvcraw ? " uvcraw" : "", nvab ? " nvab" : "", nohb ? " nohb" : "",
                                     nodethome ? " nodethome" : "", screenoff ? " screenoff" : "",
-                                    earlyoff ? " earlyoff" : "", earlyab ? " earlyab" : "",
-                                    cpuboost ? " cpuboost" : "", cpuboostab ? " cpuboostab" : "");
+                                    earlyoff ? " earlyoff" : "", earlyab ? " earlyab" : "");
         return (w < 0 || static_cast<size_t>(w) >= cap) ? 0 : static_cast<size_t>(w);
     }
 

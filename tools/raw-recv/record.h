@@ -569,6 +569,9 @@ static int rec_active(void) { return g_rec.state != REC_OFF; }
 static const char *rec_dir_for_menu(void) { return g_rec.fixed_path ? "" : g_rec.dir; }
 
 /* for the window title: "" when idle and nothing recent to say */
+/* v0.7.12: how long the recording has run (the timer over the picture) */
+static double rec_seconds(void) { return g_rec.state == REC_ON ? g_rec.secs : 0; }
+
 static void rec_status(char *out, size_t cap)
 {
     const double since = g_rec.msg_t ? (double)(SDL_GetPerformanceCounter() - g_rec.msg_t) / (double)SDL_GetPerformanceFrequency() : 1e9;
@@ -583,6 +586,7 @@ static void rec_video(const void *h, const uint8_t *d, Uint64 t) { (void)h; (voi
 static void rec_audio(const uint8_t *d, uint32_t n, uint32_t r, uint32_t c, Uint64 t) { (void)d; (void)n; (void)r; (void)c; (void)t; }
 static void rec_toggle(void) { fprintf(stderr, "\nrecording: this build has no MP4 support (libavformat)\n"); }
 static int rec_active(void) { return 0; }
+static double rec_seconds(void) { return 0; }
 static void rec_status(char *out, size_t cap) { (void)cap; out[0] = 0; }
 static void rec_join(void) { }
 static void rec_init(const char *d, const char *f) { (void)d; (void)f; }

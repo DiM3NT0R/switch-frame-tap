@@ -1374,11 +1374,8 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
             SDL_RenderClear(ren);
             if (!up_draw(ren, pd, pl, (int)W, (int)H, g_upscaler, nv12))   /* v0.7.11: U */
                 SDL_RenderCopy(ren, tex, NULL, NULL);
-            if (rec_active()) {                /* v0.5: a red dot while recording (not in the file) */
-                const int d = (int)(H / 40 > 12 ? H / 40 : 12);
-                SDL_SetRenderDrawColor(ren, 230, 40, 40, 255);
-                SDL_Rect r = { d, d, d, d };
-                SDL_RenderFillRect(ren, &r);
+            if (rec_active()) {                /* v0.5: shown while recording (not in the file); v0.7.12: with the time */
+                ui_rec_badge(ren, (int)W, (int)H);
                 SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
             }
             if (g_hud != HUD_OFF || g_hud_toast) {     /* v0.7.2: the stats overlay */
