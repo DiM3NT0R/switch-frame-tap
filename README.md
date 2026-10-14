@@ -266,12 +266,19 @@ default audio device.
 | **O** or **F3** | the stats overlay: off / FPS / graphs / full (v0.7.2; remembered) |
 | **V** | vsync on / off - off is lower latency but may tear (v0.7.11; remembered) |
 | **U** | GPU upscaling: off / AMD FSR 1 / NVIDIA NIS, plus NVIDIA RTX Video Super Resolution on Windows (v0.7.11; remembered, off by default) |
+| **P** | picture controls: brightness, contrast, saturation, gamma, sharpness - arrows to change, 0 resets (v0.7.12; remembered) |
 
 It reads USB, decodes and draws on separate threads and shows the frames in
 order, one per screen refresh (vsync), so the picture stays smooth. Its
 statistics - frame rate, latencies, decode and draw times, once a second - go
 to the terminal on Linux and to `%APPDATA%\switch-frame-tap\viewer\viewer.log`
 on Windows.
+
+**Hardware decoding** (v0.7.12): the viewer decodes with the graphics card's
+video decoder - D3D11VA on Windows, VideoToolbox on macOS, NVDEC or VAAPI on
+Linux when built from source - about 5 ms less latency in busy scenes and no
+keyframe stutter, and falls back to the CPU by itself. `--software` (or
+`hwdec=0` in viewer.ini) decodes on the CPU.
 
 **GPU upscaling** (v0.7.11, off by default): when the window or fullscreen is
 bigger than the stream (say 1080p shown on a 1440p or 4K monitor), **U**

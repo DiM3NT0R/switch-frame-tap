@@ -38,7 +38,8 @@
         "nifm:u",
         "sftap:s",
         "pm:shell",
-        "appletOE"
+        "appletOE",
+        "lbl"
     ],
     "service_host": [
         "vi:u",
@@ -46,7 +47,8 @@
         "nvdrv:s",
         "sftap",
         "sftap:s",
-        "appletOE"
+        "appletOE",
+        "lbl"
     ],
     "kernel_capabilities": [
         {

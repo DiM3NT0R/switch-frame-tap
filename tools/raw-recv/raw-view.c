@@ -175,6 +175,7 @@ static const char *ip_edit_for_menu(void);   /* NULL unless an address is being 
 #include "upscale.h"           /* v0.7.11: GPU upscaling, FSR 1 / NIS (U) */
 #include "menu.h"              /* v0.5: the main screen while there is no picture */
 #include "hud.h"               /* v0.7.2: the stats overlay (O / F3) */
+#include "picture.h"           /* v0.7.12: brightness, contrast... (P) */
 static libusb_device_handle *g_usb = NULL;
 
 /* ---- v0.7: the network transport ------------------------------------------
@@ -307,6 +308,7 @@ static void prefs_load(void)
         if (sscanf(line, "vsync=%d", &hm) == 1) g_vsync = hm != 0;
         if (sscanf(line, "upscaler=%127s", v) == 1) up_set_by_key(v);
         if (sscanf(line, "hwdec=%d", &hm) == 1) g_hwdec = hm != 0;
+        if (sscanf(line, "picture=%127s", v) == 1) pic_parse(v);
     }
     fclose(f);
 }
@@ -317,7 +319,8 @@ static void prefs_save(void)
     prefs_path(path, sizeof(path));
     FILE *f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "connection=%s\nlast_ip=%s\nstats_overlay=%d\nvsync=%d\nupscaler=%s\nhwdec=%d\n", g_conn == CONN_NET ? "network" : "usb", g_last_ip, g_hud, g_vsync, up_key[g_upscaler], g_hwdec);
+    fprintf(f, "connection=%s\nlast_ip=%s\nstats_overlay=%d\nvsync=%d\nupscaler=%s\nhwdec=%d\npicture=%d,%d,%d,%d,%d\n", g_conn == CONN_NET ? "network" : "usb", g_last_ip, g_hud, g_vsync, up_key[g_upscaler], g_hwdec,
+            g_pic.bright, g_pic.contrast, g_pic.sat, g_pic.gamma10, g_pic.sharp);
     fclose(f);
 }
 
@@ -871,6 +874,13 @@ static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
         if (e.type == SDL_KEYDOWN && (e.key.keysym.sym > 0x7f || e.key.keysym.sym == SDLK_UNKNOWN) &&
             e.key.keysym.scancode >= SDL_SCANCODE_A && e.key.keysym.scancode <= SDL_SCANCODE_Z)
             e.key.keysym.sym = SDLK_a + (e.key.keysym.scancode - SDL_SCANCODE_A);
+        /* v0.7.12: the picture panel (P) takes the arrows, Backspace, 0 and Esc while open */
+        if (e.type == SDL_KEYDOWN && !g_ip_editing && pic_key(e.key.keysym.sym)) { prefs_save(); continue; }
+        if (e.type == SDL_KEYDOWN && !g_ip_editing && e.key.keysym.sym == SDLK_p && !e.key.repeat) {
+            g_pic_panel = !g_pic_panel;
+            if (g_menu) menu_draw(ren);
+            continue;
+        }
         /* v0.7: typing the Switch's address (I) takes every key */
         if (g_ip_editing) {
             if (e.type == SDL_TEXTINPUT) {
@@ -1306,10 +1316,13 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
                 SDL_RenderSetLogicalSize(ren, (int)W, (int)H);
                 fprintf(stderr, "\nstream: %ux%u H.264%s\n", W, H, nv12 ? " (NV12)" : "");
             }
-            if (nv12) SDL_UpdateNVTexture(tex, NULL, show->data[0], show->linesize[0], show->data[1], show->linesize[1]);
-            else SDL_UpdateYUVTexture(tex, NULL, show->data[0], show->linesize[0], show->data[1], show->linesize[1], show->data[2], show->linesize[2]);
+            uint8_t *pd[3] = { show->data[0], show->data[1], show->data[2] };
+            int pl[3] = { show->linesize[0], show->linesize[1], show->linesize[2] };
+            pic_apply(pd, pl, (int)W, (int)H, nv12);   /* v0.7.12: P - nothing at the defaults */
+            if (nv12) SDL_UpdateNVTexture(tex, NULL, pd[0], pl[0], pd[1], pl[1]);
+            else SDL_UpdateYUVTexture(tex, NULL, pd[0], pl[0], pd[1], pl[1], pd[2], pl[2]);
             SDL_RenderClear(ren);
-            if (!up_draw(ren, show->data, show->linesize, (int)W, (int)H, g_upscaler, nv12))   /* v0.7.11: U */
+            if (!up_draw(ren, pd, pl, (int)W, (int)H, g_upscaler, nv12))   /* v0.7.11: U */
                 SDL_RenderCopy(ren, tex, NULL, NULL);
             if (rec_active()) {                /* v0.5: a red dot while recording (not in the file) */
                 const int d = (int)(H / 40 > 12 ? H / 40 : 12);
@@ -1326,6 +1339,7 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
                 hud_draw(ren, (int)W, (int)H, cs, rs[0] ? rs + 5 : "");
                 SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
             }
+            if (g_pic_panel) { pic_draw(ren, (int)W, (int)H); SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); }   /* v0.7.12: P */
             if (g_shot && g_run_secs > 0 && (double)(SDL_GetPerformanceCounter() - t_start) / (double)freq >= g_run_secs - 1.0) {
                 int ow = 0, oh = 0;
                 SDL_GetRendererOutputSize(ren, &ow, &oh);
@@ -1446,6 +1460,7 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(argv[i], "--upscaler") && i + 1 < argc) up_set_by_key(argv[++i]);
         else if (!strcmp(argv[i], "--software")) g_hwdec = 0;
+        else if (!strcmp(argv[i], "--picture") && i + 1 < argc) pic_parse(argv[++i]);   /* v0.7.12: B,C,S,G,SH as in viewer.ini (tests) */
         else if (!strcmp(argv[i], "--hwdec")) g_hwdec = 1;
         else if (!strcmp(argv[i], "--window") && i + 1 < argc) sscanf(argv[++i], "%dx%d", &g_win_w, &g_win_h);
         else if (!strcmp(argv[i], "--mp4") && i + 1 < argc) g_mp4 = argv[++i];

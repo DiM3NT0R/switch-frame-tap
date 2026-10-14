@@ -22,8 +22,8 @@ endif
 
 all: raw-view raw-recv
 
-raw-view: raw-view.c record.h menu.h hud.h upscale.h upscale_shaders.h font_dejavu.h
-	$(CC) $(CFLAGS) $(VIEW_CFLAGS) -o $@ $< $(VIEW_LIBS)
+raw-view: raw-view.c record.h menu.h hud.h picture.h upscale.h upscale_shaders.h font_dejavu.h
+	$(CC) $(CFLAGS) $(VIEW_CFLAGS) -o $@ $< $(VIEW_LIBS) -lm
 	@echo "raw-view built $(if $(filter 1,$(H264)),WITH,WITHOUT) H.264 (libavcodec)"
 
 # v0.4: webcam-mode check (V4L2 + libavcodec)

@@ -216,6 +216,7 @@ namespace ams {
          * last committed beat tells us how long the process lived. */
         alignas(os::ThreadStackAlignment) constinit u8 g_hb_stack[16_KB];
         constinit os::ThreadType g_hb_thread;
+        constinit std::atomic<bool> g_screen_off{false};   /* v0.7.12: config screen_off = 1 */
 
         /* v0.7.10 diagnostic: the Applet resource-limit group (ours, shared with
          * every library applet) - current/limit of memory, threads, events,
@@ -246,11 +247,34 @@ namespace ams {
                                   static_cast<unsigned long long>(cur[4]), static_cast<unsigned long long>(lim[4]));
         }
 
+        /* v0.7.12: "Screen off while streaming" - the console's backlight off
+         * (lbl, as the system's own screen-off does) while a stream runs, on
+         * again the moment it stops: the viewer closed, HOME pressed, the
+         * stream switched off. Only this thread touches it. */
+        void ScreenFollowStream() {
+            static bool dark = false, tried = false, lbl_ok = false;
+            const bool want = g_screen_off.load(std::memory_order_relaxed) &&
+                              mitm::applet::g_live_state.load(std::memory_order_relaxed) == mitm::applet::LiveState_Streaming;
+            if (want == dark) { return; }
+            if (!tried) {
+                tried = true;
+                mitm::applet::SmUse sm;
+                const Result r = lblInitialize();
+                lbl_ok = R_SUCCEEDED(r);
+                mitm::applet::LogLine("screen: lbl %s (rc=0x%x)", lbl_ok ? "ready" : "unavailable", r.GetValue());
+            }
+            if (!lbl_ok) { return; }
+            const Result r = want ? lblSwitchBacklightOff(0) : lblSwitchBacklightOn(0);
+            dark = want;
+            mitm::applet::LogLine("screen: %s (rc=0x%x)", want ? "off while streaming" : "on", r.GetValue());
+        }
+
         void HeartbeatThread(void *) {
             for (u32 i = 1; ; i++) {
                 for (u32 t = 0; t < 12; ++t) {
                     os::SleepThread(TimeSpan::FromMilliSeconds(250));
                     LogAppletLimits();
+                    ScreenFollowStream();
                 }
                 char b[96];
                 const auto &st = mitm::applet::g_stats;
@@ -383,6 +407,7 @@ namespace ams {
             mitm::applet::g_nvab_armed = mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "nvab");
             /* on unless config sets detach_on_home=0 (nodethome) */
             mitm::applet::g_detach_on_home = !mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "nodethome");
+            g_screen_off.store(mitm::applet::armfile::Contains(g_arm_buf, g_arm_len, "screenoff"), std::memory_order_relaxed);
         }
 
         /* Numeric option out of the arm file: "wait=180" delays the probe so
@@ -807,7 +832,7 @@ namespace ams {
         /* M76: this line used to print jpg=off before jpg was parsed, and
          * called every build a "read-only observer". The flag dump below is
          * the record of what this boot armed. */
-        mitm::applet::LogLine("applet-mitm v0.7.11: up (grc IPC interceptor %s), built against Atmosphere %d.%d.%d",
+        mitm::applet::LogLine("applet-mitm v0.7.12-test1: up (grc IPC interceptor %s), built against Atmosphere %d.%d.%d",
                               mitm::applet::g_grc_armed ? "ARMED" : "off",
                               ATMOSPHERE_RELEASE_VERSION_MAJOR, ATMOSPHERE_RELEASE_VERSION_MINOR, ATMOSPHERE_RELEASE_VERSION_MICRO);
         {
@@ -849,6 +874,7 @@ namespace ams {
         mitm::applet::g_nvab_armed    = ArmFileContains("nvab");
         mitm::applet::g_live_armed    = ArmFileContains("live");
         mitm::applet::g_detach_on_home = !ArmFileContains("nodethome");
+        g_screen_off.store(ArmFileContains("screenoff"), std::memory_order_relaxed);
         mitm::applet::g_nv1080_armed  = ArmFileContains("nv1080");
         mitm::applet::g_nv1080_n      = ArmFileNumber("nv1080", 120);
         mitm::applet::g_cap720_armed  = ArmFileContains("cap720");

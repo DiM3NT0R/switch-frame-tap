@@ -33,7 +33,7 @@
 
 namespace {
 
-    constexpr const char *AppVersion  = "0.7.11";
+    constexpr const char *AppVersion  = "0.7.12-test1";
     constexpr u64 ModuleTid           = 0x0100000000000C20ull;
     constexpr const char *ModuleDir   = "sdmc:/atmosphere/contents/0100000000000C20";
     constexpr const char *ModuleNsp   = "sdmc:/atmosphere/contents/0100000000000C20/exefs.nsp";
@@ -208,6 +208,7 @@ namespace {
         bool audio = true;      /* v0.3 */
         bool shot_album = false;  /* v0.7.11: screenshots next to the system's (Album) */
         bool detach_home = true;  /* v0.7.11 (PR #13): end the stream on HOME; kept when saving */
+        bool screen_off = false;  /* v0.7.12: the console's screen dark while streaming */
         int conn = 0;           /* v0.7: connection - 0 USB (PC viewer), 1 USB webcam, 2 (v0.7.7) USB webcam NV12, 3 network; from the next boot */
     };
 
@@ -252,6 +253,7 @@ namespace {
         if (IniGet(ini, "screenshot", &v)) { s.shot = v == "1"; }
         if (IniGet(ini, "screenshot_location", &v)) { s.shot_album = v == "album"; }
         if (IniGet(ini, "detach_on_home", &v)) { s.detach_home = v != "0"; }
+        if (IniGet(ini, "screen_off", &v)) { s.screen_off = v == "1"; }
         if (IniGet(ini, "audio", &v)) { s.audio = v != "0"; }
         /* the v0.4-v0.7 keys first, then the one that replaced them */
         if (IniGet(ini, "usb_mode", &v) && v == "webcam") { s.conn = 1; }
@@ -292,6 +294,8 @@ namespace {
             "screenshot_location = %s\n"
             "# detach_on_home: 1 = pressing HOME ends the stream and frees its memory | 0 = keep showing the paused game\n"
             "detach_on_home = %d\n"
+            "# screen_off: 1 = the console's screen goes dark while a stream runs (back on when it stops, or with HOME)\n"
+            "screen_off = %d\n"
             "# audio: 1 = send the game's sound to the PC viewer\n"
             "audio = %d\n"
             "# connection: usb (the PC viewer over USB) | webcam (a USB camera for OBS; no sound) |\n"
@@ -299,7 +303,7 @@ namespace {
             "#             network (the PC viewer over Wi-Fi or the dock's LAN port - play docked). Read at boot.\n"
             "connection = %s\n",
             QualityKeys[s.quality], KeyframeFrames[s.keyframe], s.cap720 ? "720" : "1080",
-            DelaySeconds[s.delay], s.any_fw ? 1 : 0, s.shot ? 1 : 0, s.shot_combo, custom, s.shot_album ? "album" : "app", s.detach_home ? 1 : 0,
+            DelaySeconds[s.delay], s.any_fw ? 1 : 0, s.shot ? 1 : 0, s.shot_combo, custom, s.shot_album ? "album" : "app", s.detach_home ? 1 : 0, s.screen_off ? 1 : 0,
             s.audio ? 1 : 0, ConnKeys[s.conn]);
         std::fclose(f);
         return true;
@@ -584,6 +588,12 @@ namespace {
                 "sound the stream gets. This turns on dvr-patches (by exelix11, bundled): they let the recorder run for "
                 "every game, so their sound comes through. Off by default; a restart applies it. Turn it off again if a "
                 "game crashes with it on (a crash report for 0100000000000023)." });
+
+            rows.push_back({ Kind::Setting, "Screen off while streaming", [this] { return std::string(set.screen_off ? "On" : "Off"); },
+                [this] { return set.screen_off ? ColGood : ColDim; }, [this](int) { set.screen_off = !set.screen_off; Saved(); },
+                "Turns the Switch's own screen dark while the stream runs, to save battery when you play on the PC. "
+                "It comes back on the moment the stream stops: close the viewer, press HOME, or switch the stream "
+                "off. Handheld only - a TV is not affected." });
 
             rows.push_back({ Kind::Header, "Picture", nullptr, nullptr, nullptr, "" });
             rows.push_back({ Kind::Setting, "Quality", [this] { return std::string(QualityNames[set.quality]); }, nullptr,
