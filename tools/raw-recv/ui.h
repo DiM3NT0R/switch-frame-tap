@@ -389,7 +389,7 @@ static void ui_drawer(SDL_Renderer *ren, float W)
 
 /* ---- over the game ------------------------------------------------------ */
 
-/* v0.7.12: while recording, a "REC 1:23" pill at the top of the picture
+/* v0.7.12: while recording, a "REC 1:23" pill at the top left of the picture
  * (drawn on the screen only - the recording keeps the console's frames) */
 static void ui_rec_badge(SDL_Renderer *ren, int W, int H)
 {
@@ -405,7 +405,10 @@ static void ui_rec_badge(SDL_Renderer *ren, int W, int H)
     char t[32];
     if (s >= 3600) snprintf(t, sizeof(t), "REC %d:%02d:%02d", s / 3600, s / 60 % 60, s % 60);
     else snprintf(t, sizeof(t), "REC %d:%02d", s / 60, s % 60);
-    const float tw = text_width(t, 15, 1), w = tw + 46, x = (w720 - w) / 2, y = 14;
+    /* top left, under the stats overlay when it is on */
+    const float tw = text_width(t, 15, 1), w = tw + 46, x = 12;
+    const float y = g_hud == HUD_FPS ? 58 : g_hud == HUD_GRAPHS ? 258 : g_hud == HUD_FULL ? 512 : 12;
+    (void)w720;
     ui_rrect(ren, x, y, w, 32, 16, (SDL_Color){ 18, 20, 25, 215 });
     /* the dot breathes, once a second */
     const double ph = (double)(SDL_GetTicks() % 1000) / 1000.0;

@@ -66,12 +66,17 @@ def stick(x, y):
 def btns(x, y, r=11, gap=24):
     for dx, dy in ((0, -gap), (0, gap), (-gap, 0), (gap, 0)):
         d.ellipse(P(x + dx - r, y + dy - r, x + dx + r, y + dy + r), fill=(30, 32, 36))
-stick(bx0 - jw / 2 + 18, cy - 62)
-btns(bx0 - jw / 2 + 18, cy + 40)
-btns(bx1 + jw / 2 - 18, cy - 62)
-stick(bx1 + jw / 2 - 18, cy + 40)
-d.rounded_rectangle(P(bx0 - jw / 2 + 4, by0 + 18, bx0 - jw / 2 + 30, by0 + 24), 3 * S, fill=(30, 32, 36))   # minus
-d.rounded_rectangle(P(bx1 + jw / 2 - 30, by0 + 18, bx1 + jw / 2 - 4, by0 + 24), 3 * S, fill=(30, 32, 36))   # plus
+# the controls centred on each Joy-Con (the visible part: jw wide)
+lcx, rcx = bx0 - jw / 2, bx1 + jw / 2
+stick(lcx, cy - 62)
+btns(lcx, cy + 42)
+btns(rcx, cy - 62)
+stick(rcx, cy + 42)
+d.rounded_rectangle(P(lcx - 10, by0 + 15, lcx + 10, by0 + 20), 2 * S, fill=(30, 32, 36))     # minus
+d.rounded_rectangle(P(rcx - 10, by0 + 15, rcx + 10, by0 + 20), 2 * S, fill=(30, 32, 36))     # plus
+d.rounded_rectangle(P(rcx - 2.5, by0 + 7.5, rcx + 2.5, by0 + 27.5), 2 * S, fill=(30, 32, 36))
+d.rounded_rectangle(P(lcx + 22, by1 - 46, lcx + 38, by1 - 30), 4 * S, fill=(30, 32, 36))     # capture
+d.ellipse(P(rcx - 38, by1 - 46, rcx - 22, by1 - 30), fill=(30, 32, 36))                    # home
 screen(P(bx0 + 24, by0 + 18, bx1 - 24, by1 - 18), 6 * S)
 
 # ---- the cable: from the Switch's bottom to the laptop's side ----
