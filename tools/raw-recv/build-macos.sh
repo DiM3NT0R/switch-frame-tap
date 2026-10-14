@@ -71,11 +71,13 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 # sdl2-config --static-libs, without -lSDL2 (the .a below instead of the dylib)
 SDL_STATIC=$("$SDLP/bin/sdl2-config" --static-libs | sed -e 's/-lSDL2main//' -e 's/-lSDL2//' -e "s#-L[^ ]*##g")
 cd "$HERE"
+xxd -i clarity.metal > clarity_shader.h
+clang -O2 -Wall -fobjc-arc -I"$SDLP/include" $("$SDLP/bin/sdl2-config" --cflags) -c clarity.m -o "$OUT/clarity.o"
 clang -O2 -Wall -DSFT_H264 -DSFT_MP4 \
     -I"$FF/include" -I"$SDLP/include" $("$SDLP/bin/sdl2-config" --cflags) -I"$USBP/include" \
-    -o "$OUT/switch-frame-tap-viewer" raw-view.c \
+    -o "$OUT/switch-frame-tap-viewer" raw-view.c "$OUT/clarity.o" \
     "$FF/lib/libavformat.a" "$FF/lib/libavcodec.a" "$FF/lib/libavutil.a" \
-    -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework CoreServices \
+    -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework CoreServices -framework Metal -framework QuartzCore \
     "$SDLP/lib/libSDL2.a" $SDL_STATIC \
     "$USBP/lib/libusb-1.0.a" -framework IOKit -framework CoreFoundation -framework Security \
     -liconv -lm

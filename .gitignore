@@ -20,4 +20,6 @@ __pycache__/
 *.ovl
 *.nacp
 dist/
+tools/raw-recv/clarity.o
+tools/raw-recv/clarity_shader.h
 *.nro

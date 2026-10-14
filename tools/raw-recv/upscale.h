@@ -15,17 +15,23 @@
 #pragma once
 #include <SDL2/SDL_opengl.h>
 #include "upscale_shaders.h"
+#include "clarity.h"
 
 #ifdef _WIN32   /* + NVIDIA RTX Video Super Resolution, a Windows driver feature (Direct3D 11) */
 enum { UP_OFF = 0, UP_FSR, UP_NIS, UP_RTX, UP_COUNT };
 static const char *const up_name[UP_COUNT] = { "off", "FSR 1", "NIS", "RTX VSR" };
 static const char *const up_key[UP_COUNT] = { "off", "fsr", "nis", "rtx" };
+#elif defined(__APPLE__)
+enum { UP_OFF = 0, UP_FSR, UP_COUNT, UP_NIS = UP_COUNT };
+static const char *const up_name[UP_COUNT] = { "off", "FSR 1" };
+static const char *const up_key[UP_COUNT] = { "off", "fsr" };
 #else
 enum { UP_OFF = 0, UP_FSR, UP_NIS, UP_COUNT };
 static const char *const up_name[UP_COUNT] = { "off", "FSR 1", "NIS" };
 static const char *const up_key[UP_COUNT] = { "off", "fsr", "nis" };
 #endif
 static int g_upscaler = UP_OFF;          /* the choice (viewer.ini: upscaler=) */
+static int g_fsr_sharpness = 70;         /* macOS RCAS strength, percent */
 static char g_up_note[72] = "";         /* why it is not available, if not */
 static char g_up_why[40] = "";          /* why the last frame was not upscaled (the overlay) */
 
@@ -74,6 +80,9 @@ static int up_needs_swap(SDL_Renderer *ren)
 #endif
 }
 
+#ifdef __APPLE__
+static struct { int active, out_w, out_h; } g_up;
+#else
 #ifndef GL_COMPUTE_SHADER
 #define GL_COMPUTE_SHADER 0x91B9
 #endif
@@ -671,11 +680,26 @@ static void up_bind(int unit, GLuint tex)
 }
 
 static GLuint fbits(float f) { GLuint u; memcpy(&u, &f, 4); return u; }
+#endif /* non-Metal backends */
 
 /* the frame, upscaled into the window: 1 drawn, 0 not (draw it the usual way) */
 static int up_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesize[3], int W, int H, int mode, int nv12)
 {
     g_up.active = 0;
+#ifdef __APPLE__
+    if (mode == UP_OFF) { g_up_why[0] = 0; return 0; }
+    int ow = 0, oh = 0;
+    SDL_GetRendererOutputSize(ren, &ow, &oh);
+    if (W <= 0 || H <= 0 || ow <= 0 || oh <= 0) return 0;
+    const double scale = SDL_min((double)ow / W, (double)oh / H);
+    if (scale <= 1.001) return up_skip("window too small", 0);
+    if (!clarity_draw(ren, (const uint8_t *const *)data, linesize, W, H,
+                      g_fsr_sharpness / 100.0f, nv12)) return up_skip("Metal FSR unavailable", 0);
+    g_up.active = 1;
+    g_up.out_w = (int)SDL_lround(W * scale); g_up.out_h = (int)SDL_lround(H * scale);
+    g_up_why[0] = 0;
+    return 1;
+#else
 #ifdef _WIN32
     if (mode == UP_RTX) return vsr_draw(ren, data, linesize, W, H, nv12);
 #endif
@@ -782,6 +806,7 @@ static int up_draw(SDL_Renderer *ren, uint8_t *const data[3], const int linesize
     g_up_why[0] = 0;
     g_up.active = 1; g_up.out_w = vw; g_up.out_h = vh;
     return 1;
+#endif
 }
 
 /* the note shown when U is pressed */
@@ -789,8 +814,8 @@ static void up_describe(SDL_Renderer *ren, char *out, size_t cap)
 {
     if (g_upscaler == UP_OFF) { snprintf(out, cap, "Upscaling off  (U)"); return; }
 #ifdef __APPLE__
-    (void)ren;
-    snprintf(out, cap, "%s: not available on macOS yet  (U)", up_name[g_upscaler]);
+    snprintf(out, cap, clarity_init(ren) ? "Metal FSR 1, RCAS %d%% (F9)" : "Metal FSR unavailable",
+             g_fsr_sharpness);
 #else
 #ifdef _WIN32
     if (g_upscaler == UP_RTX) {
@@ -828,12 +853,19 @@ static void up_hud_text(char *out, size_t cap)
 #ifdef _WIN32
     if (g_upscaler == UP_RTX && g_vsr.vsr < 0) { snprintf(out, cap, "plain, to %dx%d (no RTX VSR)", g_up.out_w, g_up.out_h); return; }
 #endif
+#ifdef __APPLE__
+    int kernel = 0;
+    clarity_status(&kernel, NULL);
+    snprintf(out, cap, "%s/RCAS %d%%", kernel == 2 ? "EASU" : "Cubic", g_fsr_sharpness);
+#else
     snprintf(out, cap, "%s to %dx%d", up_name[g_upscaler], g_up.out_w, g_up.out_h);
+#endif
 }
 
 /* the renderer is about to go: forget everything made with it */
 static void up_reset(void)
 {
+    clarity_close();
     memset(&g_up, 0, sizeof(g_up));           /* the GL objects go with SDL's context */
     g_up_why[0] = 0;
     g_up_note[0] = 0;

@@ -315,6 +315,7 @@ static void prefs_load(void)
         if (sscanf(line, "stats_overlay=%d", &hm) == 1 && hm >= 0 && hm < HUD_MODES) g_hud = hm;
         if (sscanf(line, "vsync=%d", &hm) == 1) g_vsync = hm != 0;
         if (sscanf(line, "upscaler=%127s", v) == 1) up_set_by_key(v);
+        if (sscanf(line, "fsr_sharpness=%d", &hm) == 1 && (hm == 40 || hm == 70 || hm == 100)) g_fsr_sharpness = hm;
         if (sscanf(line, "hwdec=%d", &hm) == 1) g_hwdec = hm != 0;
         if (sscanf(line, "picture=%127s", v) == 1) pic_parse(v);
     }
@@ -329,6 +330,7 @@ static void prefs_save(void)
     if (!f) return;
     fprintf(f, "connection=%s\nlast_ip=%s\nstats_overlay=%d\nvsync=%d\nupscaler=%s\nhwdec=%d\npicture=%d,%d,%d,%d,%d\n", g_conn == CONN_NET ? "network" : "usb", g_last_ip, g_hud, g_vsync, up_key[g_upscaler], g_hwdec,
             g_pic.bright, g_pic.contrast, g_pic.sat, g_pic.gamma10, g_pic.sharp);
+    fprintf(f, "fsr_sharpness=%d\n", g_fsr_sharpness);
     fclose(f);
 }
 
@@ -1023,12 +1025,23 @@ static void app_events(SDL_Window *win, SDL_Renderer *ren, SDL_Texture *tex)
         else if (key == SDLK_o || key == SDLK_F3) act_hud(-1);
         else if (key == SDLK_v) { act_vsync(ren, !g_vsync); if (g_menu) menu_draw(ren); }
         else if (key == SDLK_u) { act_upscaler(ren, -1); if (g_menu) menu_draw(ren); }
+#ifdef __APPLE__
+        else if (key == SDLK_F9) {
+            g_fsr_sharpness = g_fsr_sharpness == 40 ? 70 : g_fsr_sharpness == 70 ? 100 : 40;
+            act_upscaler(ren, UP_FSR);
+        }
+#endif
         else if (key == SDLK_m) { act_mute(!g_mute); if (g_menu) menu_draw(ren); }
         else if (e.type == SDL_WINDOWEVENT) {
             /* resized or uncovered with no new frame: draw the last one again */
             if (g_menu) { menu_draw(ren); continue; }
             SDL_RenderClear(ren);
-            if (tex) SDL_RenderCopy(ren, tex, NULL, NULL);
+            if (tex) {
+#ifdef __APPLE__
+                if (g_upscaler != UP_FSR || !g_up.active || !clarity_draw(ren, NULL, NULL, 0, 0, g_fsr_sharpness / 100.0f, 0))
+#endif
+                    SDL_RenderCopy(ren, tex, NULL, NULL);
+            }
             SDL_RenderPresent(ren);
         }
     }
@@ -1480,6 +1493,7 @@ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int
     if (rec) fclose(rec);
     if (es) fclose(es);
     if (tex) SDL_DestroyTexture(tex);
+    up_reset();
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();
@@ -1866,6 +1880,7 @@ int main(int argc, char **argv)
     if (rec) fclose(rec);
     if (es) fclose(es);
     if (tex) SDL_DestroyTexture(tex);
+    up_reset();
     if (ren) SDL_DestroyRenderer(ren);
     if (win) SDL_DestroyWindow(win);
     SDL_Quit();

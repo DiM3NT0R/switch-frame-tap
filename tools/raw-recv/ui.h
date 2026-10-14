@@ -287,12 +287,8 @@ static void ui_drawer(SDL_Renderer *ren, float W)
         char why[48] = "";
         if (g_upscaler != UP_OFF) up_hud_text(why, sizeof(why));
         ui_text_fit(ren, why, (int)xr, (int)(y + 7), 13, 0, UI_DIM, 2, (int)(cw - 110));
-#ifdef __APPLE__
-        text_draw(ren, "Not on macOS yet", (int)cx, (int)(y + 36), 14, 0, UI_FAINT, 0);
-#else
         static const char *const ups[] = { "Off", "FSR 1", "NIS", "RTX VSR" };
         ui_seg(ren, xr, 0, y + 32, ups, UP_COUNT, g_upscaler, H_UPS, 13);
-#endif
         y += h2 + 4;
         ui_row(H_HUD, 0, y, h2);
         if (ui_focused(H_HUD, 0)) ui_rrect(ren, cx - 12, y - 2, cw + 24, h2 + 4, 10, UI_SURF2);
@@ -623,9 +619,7 @@ static void ui_change(SDL_Window *win, SDL_Renderer *ren, int id, int arg, int d
     case H_FULL: act_fullscreen(win); break;
     case H_VSYNC: act_vsync(ren, !g_vsync); break;
     case H_HWDEC: act_hwdec(!g_hwdec); break;
-#ifndef __APPLE__
     case H_UPS: act_upscaler(ren, d < 0 ? (g_upscaler + UP_COUNT - 1) % UP_COUNT : (g_upscaler + 1) % UP_COUNT); break;
-#endif
     case H_HUD: act_hud(d < 0 ? (g_hud + HUD_MODES - 1) % HUD_MODES : (g_hud + 1) % HUD_MODES); break;
     case H_PIC: {
         int *f = pic_field(arg);

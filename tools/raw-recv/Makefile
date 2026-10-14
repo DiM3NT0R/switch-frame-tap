@@ -22,8 +22,20 @@ endif
 
 all: raw-view raw-recv
 
-raw-view: raw-view.c record.h menu.h hud.h picture.h upscale.h upscale_shaders.h font_dejavu.h
-	$(CC) $(CFLAGS) $(VIEW_CFLAGS) -o $@ $< $(VIEW_LIBS) -lm
+ifeq ($(shell uname -s),Darwin)
+CLARITY_OBJ = clarity.o
+VIEW_LIBS += -framework Metal -framework QuartzCore
+clarity_shader.h: clarity.metal
+	xxd -i $< > $@
+clarity.o: clarity.m clarity.h clarity_shader.h
+	$(CC) $(CFLAGS) -fobjc-arc $(shell pkg-config --cflags sdl2) -c $< -o $@
+METAL_SDL_CONFIG ?= sdl2-config
+metal-fsr-test: metal-fsr-test.c raw-view.c upscale.h ui.h hud.h menu.h picture.h record.h clarity.h $(CLARITY_OBJ)
+	$(CC) $(CFLAGS) -I$(shell $(METAL_SDL_CONFIG) --prefix)/include $(VIEW_CFLAGS) -o /tmp/frame-tap-metal-fsr-test $< $(CLARITY_OBJ) $(shell $(METAL_SDL_CONFIG) --static-libs) $(VIEW_LIBS) -lm
+endif
+
+raw-view: raw-view.c record.h menu.h hud.h picture.h upscale.h upscale_shaders.h font_dejavu.h clarity.h $(CLARITY_OBJ)
+	$(CC) $(CFLAGS) $(VIEW_CFLAGS) -o $@ $< $(CLARITY_OBJ) $(VIEW_LIBS) -lm
 	@echo "raw-view built $(if $(filter 1,$(H264)),WITH,WITHOUT) H.264 (libavcodec)"
 
 # v0.4: webcam-mode check (V4L2 + libavcodec)
@@ -41,6 +53,6 @@ test: raw-view
 	python3 ../sft_stream_test.py
 
 clean:
-	rm -f raw-view raw-recv
+	rm -f raw-view raw-recv clarity.o clarity_shader.h
 
 .PHONY: all test clean

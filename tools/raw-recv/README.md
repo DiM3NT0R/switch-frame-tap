@@ -19,6 +19,9 @@ make                                   # must say "raw-view built WITH H.264"
 
 `python3 ../sft_tool.py stats|last|artifacts|head` inspects recordings.
 
+macOS: [Metal FSR 1](METAL-FSR.md) integrates with the Upscaling setting (U);
+F9 selects RCAS strength 40/70/100 percent. Filtering is off by default.
+
 ---
 
 The original raw-frame tooling follows.
