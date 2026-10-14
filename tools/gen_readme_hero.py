@@ -66,17 +66,21 @@ def stick(x, y):
 def btns(x, y, r=11, gap=24):
     for dx, dy in ((0, -gap), (0, gap), (-gap, 0), (gap, 0)):
         d.ellipse(P(x + dx - r, y + dy - r, x + dx + r, y + dy + r), fill=(30, 32, 36))
-# the controls centred on each Joy-Con (the visible part: jw wide)
+# the controls where the real Joy-Con have them (102 mm tall: 2.65 px a mm
+# here): the top pair 26 mm down, the lower pair 58 mm, centred across;
+# - / + near the top inner corner, Capture / HOME near the bottom inner side
 lcx, rcx = bx0 - jw / 2, bx1 + jw / 2
-stick(lcx, cy - 62)
-btns(lcx, cy + 42)
-btns(rcx, cy - 62)
-stick(rcx, cy + 42)
-d.rounded_rectangle(P(lcx - 10, by0 + 15, lcx + 10, by0 + 20), 2 * S, fill=(30, 32, 36))     # minus
-d.rounded_rectangle(P(rcx - 10, by0 + 15, rcx + 10, by0 + 20), 2 * S, fill=(30, 32, 36))     # plus
-d.rounded_rectangle(P(rcx - 2.5, by0 + 7.5, rcx + 2.5, by0 + 27.5), 2 * S, fill=(30, 32, 36))
-d.rounded_rectangle(P(lcx + 22, by1 - 46, lcx + 38, by1 - 30), 4 * S, fill=(30, 32, 36))     # capture
-d.ellipse(P(rcx - 38, by1 - 46, rcx - 22, by1 - 30), fill=(30, 32, 36))                    # home
+y_top, y_low, mm = by0 + 69, by0 + 154, 2.65
+stick(lcx, y_top)
+btns(lcx, y_low)
+btns(rcx, y_top)
+stick(rcx, y_low)
+d.rounded_rectangle(P(lcx + 14, by0 + 17, lcx + 32, by0 + 22), 2 * S, fill=(30, 32, 36))       # minus
+d.rounded_rectangle(P(rcx - 32, by0 + 17, rcx - 14, by0 + 22), 2 * S, fill=(30, 32, 36))       # plus
+d.rounded_rectangle(P(rcx - 25.5, by0 + 10.5, rcx - 20.5, by0 + 28.5), 2 * S, fill=(30, 32, 36))
+d.rounded_rectangle(P(lcx + 14, by0 + 199, lcx + 30, by0 + 215), 4 * S, fill=(30, 32, 36))     # capture
+d.ellipse(P(rcx - 31, by0 + 198, rcx - 13, by0 + 216), fill=(30, 32, 36))                    # HOME
+d.ellipse(P(rcx - 27, by0 + 202, rcx - 17, by0 + 212), fill=(52, 55, 60))
 screen(P(bx0 + 24, by0 + 18, bx1 - 24, by1 - 18), 6 * S)
 
 # ---- the cable: from the Switch's bottom to the laptop's side ----

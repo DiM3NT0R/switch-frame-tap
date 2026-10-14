@@ -272,7 +272,11 @@ static void ui_drawer(SDL_Renderer *ren, float W)
         ui_row(H_HWDEC, 0, y, h);
         char dec[64];
         snprintf(dec, sizeof(dec), "Now: %s", g_dec_mode && g_dec_mode[0] ? g_dec_mode : (g_hwdec ? "the graphics card" : "the CPU"));
+#if defined(_WIN32) || defined(__APPLE__)
+        ui_label(ren, cx, y, h, "Hardware decoding (beta)", dec, ui_focused(H_HWDEC, 0), cw);
+#else
         ui_label(ren, cx, y, h, "Hardware decoding", dec, ui_focused(H_HWDEC, 0), cw);
+#endif
         ui_toggle(ren, xr, y + 12, g_hwdec, H_HWDEC, 1);
         y += h + 4;
         /* the multi-choice rows: the label, the choices under it */

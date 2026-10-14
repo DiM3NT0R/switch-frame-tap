@@ -22,7 +22,7 @@ the viewer on your PC, start a game.
 - **USB or network**: a USB-C cable in handheld mode, Wi-Fi or LAN when docked.
 - **Game sound** included.
 - **Low latency**: about 45 ms (720p) to 60 ms (1080p) from the game to your PC.
-- **Viewers for Windows, Linux and macOS.**
+- **Viewers for Windows, Linux and macOS**, with one Settings panel for everything.
 - **Record to MP4** with one key, and take **native-resolution screenshots**.
 - **Webcam mode**: the Switch shows up as a USB camera in OBS, Discord, Zoom
   or any camera app.
@@ -207,7 +207,7 @@ Nothing else: no other sysmodule, no sigpatches, no capture card.
 This drives hardware engines directly; a bug can freeze the console (see
 [If something goes wrong](#if-something-goes-wrong)).
 
-**1. The Switch.** Download `switch-frame-tap-0.7.11-switch.zip` from the
+**1. The Switch.** Download `switch-frame-tap-0.7.12-switch.zip` from the
 [release](https://github.com/TomasUribe/switch-frame-tap/releases) and unzip
 it onto the root of the SD card (card reader or Hekate USB mass storage). It
 contains:
@@ -221,7 +221,7 @@ switch/.overlays/switch-frame-tap.ovl         the overlay (Tesla / Ultrahand)
 Reboot. Updating later is the same: unzip over it; your settings are kept.
 
 **2a. The PC viewer on Windows.** Unzip
-`switch-frame-tap-0.7.11-windows-viewer.zip` anywhere. Once, with the Switch
+`switch-frame-tap-0.7.12-windows-viewer.zip` anywhere. Once, with the Switch
 connected and running: open [Zadig](https://zadig.akeo.ie/), **Options ->
 List All Devices**, pick **Switch Frame Tap** (USB ID 1209 5F1E - make sure
 it is that one), choose **WinUSB** and **Install Driver**. Then double-click
@@ -229,7 +229,7 @@ it is that one), choose **WinUSB** and **Install Driver**. Then double-click
 unknown publisher: **More info -> Run anyway**.
 
 **2b. The PC viewer on Linux** (any distribution - Ubuntu, Fedora, Arch,
-Bazzite, SteamOS - x86_64). Unpack `switch-frame-tap-0.7.11-linux.tar.gz` and
+Bazzite, SteamOS - x86_64). Unpack `switch-frame-tap-0.7.12-linux.tar.gz` and
 run `./install.sh`: it puts **Switch Frame Tap** in the applications menu and
 prints the one `sudo` command that installs the USB rule (lets the viewer open
 the Switch). It is a single program with FFmpeg, SDL 2 and libusb built in.
@@ -244,7 +244,7 @@ bash tools/raw-recv/install-launcher.sh
 ```
 
 **2c. The PC viewer on macOS** (v0.7.11; Apple Silicon or Intel). Unzip
-`switch-frame-tap-0.7.11-macos-arm64.zip` (Apple Silicon) or `-x86_64.zip`
+`switch-frame-tap-0.7.12-macos-arm64.zip` (Apple Silicon) or `-x86_64.zip`
 (Intel) and drag **Switch Frame Tap.app** to Applications. It is not signed by
 Apple: the first time, right-click it and choose **Open**. No USB driver is
 needed. Thanks to proconsule54 and DiM3NT0R for the first macOS builds.
@@ -254,6 +254,12 @@ Switch, its USB driver, or a game) and lists its keys; the same screen comes
 back whenever the game is closed or not on screen (the HOME menu) instead of
 a frozen frame. It reconnects on its own and closes only when you close it. It plays the game's sound on the
 default audio device.
+
+| ![The viewer's home screen, waiting for the Switch](docs/viewer-home.jpg) | ![The Settings panel over the game](docs/viewer-settings.jpg) |
+|---|---|
+| *The home screen: what the viewer is waiting for, USB or network* | *Settings (Esc or the gear): every option, mouse or keys* |
+| ![The picture controls: brightness, contrast, saturation, gamma, sharpness](docs/viewer-picture.jpg) | ![The full stats overlay, with the recording timer](docs/viewer-stats-full.jpg) |
+| *Picture controls (P)* | *The full stats overlay (O / F3) and the recording timer (R)* |
 
 | key | |
 |---|---|
@@ -275,10 +281,12 @@ to the terminal on Linux and to `%APPDATA%\switch-frame-tap\viewer\viewer.log`
 on Windows.
 
 **Hardware decoding** (v0.7.12): the viewer decodes with the graphics card's
-video decoder - D3D11VA on Windows, VideoToolbox on macOS, NVDEC or VAAPI on
-Linux when built from source - about 5 ms less latency in busy scenes and no
-keyframe stutter, and falls back to the CPU by itself. `--software` (or
-`hwdec=0` in viewer.ini) decodes on the CPU.
+video decoder - about 5 ms less latency in busy scenes and no keyframe
+stutter - and falls back to the CPU by itself. On by default on Linux built
+from source (VAAPI or NVDEC); on Windows (D3D11VA) and macOS (VideoToolbox)
+it is still being tested, so it is off by default there - turn it on in
+Settings and tell us how it goes. `--software` (or `hwdec=0` in viewer.ini)
+decodes on the CPU.
 
 **GPU upscaling** (v0.7.11, off by default): when the window or fullscreen is
 bigger than the stream (say 1080p shown on a 1440p or 4K monitor), **U**
@@ -498,7 +506,7 @@ Please attach both to a bug report.
 ```bash
 git clone --recursive https://github.com/Atmosphere-NX/Atmosphere ref/Atmosphere
 git clone https://github.com/WerWolv/libtesla ref/libtesla
-bash tools/make_release.sh 0.7.11      # -> dist/switch-frame-tap-0.7.11-{switch.zip,linux.tar.gz,windows-viewer.zip} (macOS: GitHub Actions)
+bash tools/make_release.sh 0.7.12      # -> dist/switch-frame-tap-0.7.12-{switch.zip,linux.tar.gz,windows-viewer.zip} (macOS: GitHub Actions)
 bash tools/run_pc_tests.sh             # every check that needs no console
 ```
 
