@@ -253,8 +253,12 @@ namespace ams {
          * stream switched off. Only this thread touches it. */
         void ScreenFollowStream() {
             static bool dark = false, tried = false, lbl_ok = false;
-            const bool want = g_screen_off.load(std::memory_order_relaxed) &&
-                              mitm::applet::g_live_state.load(std::memory_order_relaxed) == mitm::applet::LiveState_Streaming;
+            /* and the game is drawing: HOME with detach_on_home = 0 keeps the
+             * session, but the screen should come back for the HOME menu */
+            const u64 qt = mitm::applet::g_queue_tick.load(std::memory_order_relaxed);
+            const bool drawing = qt != 0 && armTicksToNs(armGetSystemTick() - qt) < UINT64_C(1000000000);
+            const bool want = g_screen_off.load(std::memory_order_relaxed) && drawing &&
+                              mitm::applet::g_streaming_now.load(std::memory_order_relaxed);
             if (want == dark) { return; }
             if (!tried) {
                 tried = true;
@@ -832,7 +836,7 @@ namespace ams {
         /* M76: this line used to print jpg=off before jpg was parsed, and
          * called every build a "read-only observer". The flag dump below is
          * the record of what this boot armed. */
-        mitm::applet::LogLine("applet-mitm v0.7.12-test1: up (grc IPC interceptor %s), built against Atmosphere %d.%d.%d",
+        mitm::applet::LogLine("applet-mitm v0.7.12-test2: up (grc IPC interceptor %s), built against Atmosphere %d.%d.%d",
                               mitm::applet::g_grc_armed ? "ARMED" : "off",
                               ATMOSPHERE_RELEASE_VERSION_MAJOR, ATMOSPHERE_RELEASE_VERSION_MINOR, ATMOSPHERE_RELEASE_VERSION_MICRO);
         {
@@ -1163,6 +1167,7 @@ namespace ams::mitm::applet {
         const bool on = g_stream_enabled.load(std::memory_order_relaxed);
         if (!on && !g_usb_released && ::ams::g_usb_ep_in != nullptr) {
             static_cast<void>(usbDsEndpoint_Cancel(::ams::g_usb_ep_in));
+            UsbByeStop();
             if (::ams::g_usb_ep_out != nullptr) { static_cast<void>(usbDsEndpoint_Cancel(::ams::g_usb_ep_out)); }
             usbDsExit();
             ::ams::g_usb_iface = nullptr;
@@ -1276,6 +1281,36 @@ namespace ams::mitm::applet {
 
         if (out_sent != nullptr) { *out_sent = transferred; }
         return transferred > 0;
+    }
+
+    namespace { bool g_bye_posted = false; u32 g_bye_urb = 0; }
+
+    bool UsbViewerSaidBye() {
+        if (g_tx_net.load(std::memory_order_relaxed) || g_uvc_mode || ::ams::g_usb_ep_out == nullptr) { return false; }
+        UsbDsEndpoint *ep = ::ams::g_usb_ep_out;
+        if (!g_bye_posted) {
+            eventClear(std::addressof(ep->CompletionEvent));
+            std::memset(::ams::g_usb_ep_out_buf, 0, 16);
+            if (R_FAILED(usbDsEndpoint_PostBufferAsync(ep, ::ams::g_usb_ep_out_buf, sizeof(::ams::g_usb_ep_out_buf), std::addressof(g_bye_urb)))) { return false; }
+            g_bye_posted = true;
+            return false;
+        }
+        if (R_FAILED(eventWait(std::addressof(ep->CompletionEvent), 0))) { return false; }   /* nothing yet */
+        eventClear(std::addressof(ep->CompletionEvent));
+        g_bye_posted = false;
+        UsbDsReportData report = {};
+        u32 got = 0;
+        if (R_FAILED(usbDsEndpoint_GetReportData(ep, std::addressof(report))) ||
+            R_FAILED(usbDsParseReportData(std::addressof(report), g_bye_urb, nullptr, std::addressof(got)))) { return false; }
+        return got >= 4 && std::memcmp(::ams::g_usb_ep_out_buf, "SFTQ", 4) == 0;
+    }
+
+    void UsbByeStop() {
+        if (!g_bye_posted || ::ams::g_usb_ep_out == nullptr) { g_bye_posted = false; return; }
+        static_cast<void>(usbDsEndpoint_Cancel(::ams::g_usb_ep_out));
+        static_cast<void>(eventWait(std::addressof(::ams::g_usb_ep_out->CompletionEvent), UINT64_C(100000000)));
+        eventClear(std::addressof(::ams::g_usb_ep_out->CompletionEvent));
+        g_bye_posted = false;
     }
 
     bool UsbSendBuffer(const void *buf, size_t len, size_t *out_sent) {

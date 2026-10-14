@@ -88,6 +88,7 @@
 #define SFT_PID 0x5F1E
 #define SFT_IFACE 0
 #define SFT_EP_IN 0x81
+#define SFT_EP_OUT 0x01            /* v0.7.12: the viewer's goodbye ("SFTQ") */
 #define SFT_MAGIC 0x52544653u
 #define SFT_FLAG_PACKED420 1u
 #define SFT_FLAG_H264      2u
@@ -491,7 +492,14 @@ static int net_try_connect(void)
 /* close whichever transport is open */
 static void transport_close(void)
 {
-    if (g_usb) { libusb_release_interface(g_usb, 0); libusb_close(g_usb); g_usb = NULL; }
+    if (g_usb) {
+        /* v0.7.12: goodbye - the console ends the stream now (its screen comes
+         * back with screen_off) instead of noticing after its 5 s timeout */
+        unsigned char bye[4] = { 'S', 'F', 'T', 'Q' };
+        int n = 0;
+        libusb_bulk_transfer(g_usb, SFT_EP_OUT, bye, sizeof(bye), &n, 200);
+        libusb_release_interface(g_usb, 0); libusb_close(g_usb); g_usb = NULL;
+    }
     if (g_sock != SOCK_BAD) { sock_close(g_sock); g_sock = SOCK_BAD; g_net_peer[0] = 0; }
 }
 static FILE *g_in = NULL;           /* --file */

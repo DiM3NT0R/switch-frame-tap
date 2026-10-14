@@ -169,6 +169,10 @@ namespace ams::mitm::applet {
     /* M98: new settings arrived (ReloadConfig): end the session, restart with them */
     extern std::atomic<bool> g_reconfig_request;
     extern std::atomic<u32>  g_live_state;
+    /* v0.7.12: frames are going out right now - true from the stream's start
+     * to the moment it stops, whatever comes after (HOME, a manual, the
+     * viewer leaving); g_live_state lags behind those */
+    extern std::atomic<bool> g_streaming_now;
     extern std::atomic<u32>  g_live_w, g_live_h, g_live_fps_x10, g_live_game_fps_x10, g_live_sessions;
 
     /* Spawn the worker. The VIC probe MUST NOT run on the binder dispatch

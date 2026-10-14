@@ -1478,6 +1478,7 @@ namespace ams::mitm::applet {
     constinit std::atomic<u64>  g_app_tid{0};
     constinit std::atomic<bool> g_app_excluded{false};
     constinit std::atomic<u32>  g_live_state{LiveState_Starting};
+    constinit std::atomic<bool> g_streaming_now{false};
     constinit std::atomic<u32>  g_live_w{0}, g_live_h{0}, g_live_fps_x10{0}, g_live_game_fps_x10{0}, g_live_sessions{0};
 
     void CaptureGameSurface(const NvGraphicBufferRaw *gb, s32 slot_arg) {
@@ -6318,6 +6319,8 @@ namespace ams::mitm::applet {
             g_live_w.store(w, std::memory_order_relaxed);
             g_live_h.store(h, std::memory_order_relaxed);
             g_live_state.store(LiveState_Streaming, std::memory_order_relaxed);
+            g_streaming_now.store(true, std::memory_order_relaxed);
+            ON_SCOPE_EXIT { g_streaming_now.store(false, std::memory_order_relaxed); };
             SetViewerReason(ViewerReason_None);
             g_vic_quiet = true;
             ON_SCOPE_EXIT { g_vic_quiet = false; };
@@ -6490,8 +6493,10 @@ namespace ams::mitm::applet {
                 g_live_w.store(L.w, std::memory_order_relaxed);
                 g_live_h.store(L.h, std::memory_order_relaxed);
                 g_live_state.store(LiveState_Streaming, std::memory_order_relaxed);
+                g_streaming_now.store(true, std::memory_order_relaxed);
                 SetViewerReason(ViewerReason_None);
             }
+            ON_SCOPE_EXIT { g_streaming_now.store(false, std::memory_order_relaxed); UsbByeStop(); };
             /* v0.6: the P setup, and the bitrate experiment's variants of it.
              * grc's P setup (ours since M85) searches motion only from the
              * zero vector and this frame's neighbours - no temporal hint (last
@@ -6757,6 +6762,7 @@ namespace ams::mitm::applet {
                 if (live && g_applet_needs_memory.load(std::memory_order_relaxed)) { why = "an applet (manual, news, eShop) needs the memory"; end = StreamEnd::Disabled; break; }
                 if (live && g_reconfig_request.exchange(false, std::memory_order_relaxed)) { why = "new settings from the manager app"; end = StreamEnd::Reconfigure; break; }
                 if (live && g_app_excluded.load(std::memory_order_relaxed)) { why = "this app was excluded"; end = StreamEnd::Disabled; break; }
+                if (live && (i & 7) == 0 && UsbViewerSaidBye()) { why = "the viewer closed"; end = StreamEnd::ViewerGone; break; }   /* v0.7.12 */
                 /* exp/detach-on-home: game stopped presenting (HOME / SwitchU).
                  * End the session so we are not holding a debug attach through
                  * the Album/vi handoff; RunLive reattaches on the next present. */
@@ -6983,6 +6989,7 @@ namespace ams::mitm::applet {
             const u32 nd = done ? done : 1;
             const u64 fps_x10 = wall ? static_cast<u64>(sent) * UINT64_C(10000000000) / wall : 0;
             const u64 game_x10 = wall ? static_cast<u64>(presented) * UINT64_C(10000000000) / wall : 0;
+            g_streaming_now.store(false, std::memory_order_relaxed);   /* the screen comes back now (screen_off) */
             LogLine("   nvstream: stopped: %s", why);
             if (audio_bytes != 0) {
                 LogLine("   nvstream: game audio %llu KB in %u packets (%llu ms of sound)", static_cast<unsigned long long>(audio_bytes / 1024), audio_seq,

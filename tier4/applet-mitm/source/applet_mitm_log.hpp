@@ -75,6 +75,11 @@ namespace ams::mitm::applet {
      * The buffer must stay untouched until UsbWaitAsync returns. */
     bool UsbPostAsync(const void *buf, size_t len, u32 *out_urb);
     bool UsbWaitAsync(u32 urb, size_t *out_sent);
+    /* v0.7.12: the viewer says goodbye ("SFTQ" on the OUT endpoint) when it
+     * closes, so a stream ends at once instead of after the 5 s timeout.
+     * Called from the stream loop; UsbByeStop at the end of a session. */
+    bool UsbViewerSaidBye();
+    void UsbByeStop();
 
     /* M86: true if a host program is reading the stream endpoint right now.
      * Sends one empty SFTR header (length 0, which raw-view skips) and waits
